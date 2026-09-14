@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSession } from "../../../lib/auth";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -175,6 +176,7 @@ async function callNvidia(
 }
 
 export async function POST(request: NextRequest) {
+  if (!getSession()) return NextResponse.json({ ok: false, error: "Authentication required." }, { status: 401 });
   try {
     const body = (await request.json()) as ProcessBody;
     const stage = body.stage || "edit";

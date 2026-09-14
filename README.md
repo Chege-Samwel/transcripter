@@ -1,46 +1,58 @@
-# Transcripter Workflow Studio
+# Transcripter
 
-A Vercel-ready Next.js app for turning raw transcripts into a traceable, batch-safe edited version. The workflow stores the source, editorial rules, master prompt, model routing, context limits, latest output, and cross-check results as one portable JSON file.
+Transcripter is a private editorial workspace for turning raw transcripts into clear, publishable edits without losing the source voice.
 
-## What is included
+## Product flow
 
-- Transcript input with editable source, TXT/MD upload, and ZIP intake that looks for `V.txt` first.
-- Persistent workflow fields using browser draft storage, plus import/export JSON and a share link that pre-fills the full workflow.
-- Explicit Normalize → Format → Edit pipeline. Each stage sends one batch to one process at a time.
-- Context-aware batch planner with estimated tokens, configurable target batch size, overlap continuity context, and max output tokens.
-- NVIDIA-compatible OpenAI chat-completions route with ordered fallback models and clear failure tracing.
-- Local safe preview mode when `NVIDIA_API_KEY` is not configured, so the UI can be previewed without credentials.
-- Execution timeline with batch, stage, model, fallback, demo, duration, and error status.
-- Full output display with TXT/PDF downloads, clipboard copy, and a deterministic cross-check for unresolved markers, repeated words, and punctuation issues.
+1. Sign in to the private workspace.
+2. Paste a transcript or upload TXT, Markdown, or a ZIP containing `V.txt`.
+3. Run the saved editorial direction through Normalize → Format → Edit.
+4. Review the assembled output, run the section cross-check, and download TXT or PDF.
+5. Change editorial direction and model routing in **Settings**, never in the intake screen.
 
-## Run locally
+Long sources are split into context-safe batches. Each batch receives one stage at a time, with continuity context kept separate from assembled output. A provider failure tries the configured alternatives in order and stops safely if all attempts fail.
+
+## Local development
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+The development server includes a local-only preview account when auth variables are not set:
 
-To use NVIDIA inference, create `.env.local` (never commit it):
-
-```bash
-NVIDIA_API_KEY=your_key_here
+```text
+Email: editor@local.test
+Password: local-preview-only
 ```
 
-The server route calls `https://integrate.api.nvidia.com/v1/chat/completions`. The key is read only inside `app/api/process/route.ts` and is never sent to the browser.
+Do not use the preview credentials in a deployed environment.
 
-## Deploy to Vercel
+## Production configuration
 
-Import the repository into Vercel and add `NVIDIA_API_KEY` under **Project Settings → Environment Variables**. Vercel detects the Next.js framework automatically. The included `vercel.json` keeps the deployment in the `iad1` region.
+Copy `.env.example` to your deployment environment. Required values:
 
-## Workflow handoffs
+- `SESSION_SECRET` — long random secret used to sign the HTTP-only session cookie.
+- `AUTH_EMAIL` — the account email permitted to sign in.
+- `AUTH_PASSWORD_HASH` — bcrypt hash for that account's password.
+- `NVIDIA_API_KEY` — server-side NVIDIA API key.
 
-- **Export JSON** contains the transcript and every editable field, routing choice, output, and cross-check result.
-- **Import JSON** restores those values without asking the recipient to re-enter the form.
-- **Share workflow** copies a URL containing the same payload. For very long transcripts, use the JSON export because URLs can become unwieldy.
-- Browser draft storage is local to the current browser. Use Export JSON for durable or team handoffs.
+`AUTH_PASSWORD` is supported for local setup, but a bcrypt hash is preferred in production. Generate one with any trusted bcrypt tool before deploying.
 
-## Model and error behavior
+### Optional Neon persistence
 
-The client plans batches before any model call. For each batch it runs the three stages sequentially. The API route estimates prompt tokens against the configured context window and returns a clear `CONTEXT_LIMIT` error rather than silently truncating. If NVIDIA returns an error, the route tries the primary model and then each non-empty fallback in order; all attempts are included in the trace response. A failed stage stops final assembly so partial output cannot be mistaken for a complete edit.
+The app works with browser draft storage when no database is configured. For server persistence across devices:
+
+1. Create a Neon Postgres database.
+2. Run [`db/schema.sql`](./db/schema.sql) once.
+3. Set `DATABASE_URL` in the deployment environment.
+
+The authenticated user's workflow settings, latest output, and cross-check results are then stored by email. The browser remains a resilient draft cache if the database is temporarily unavailable.
+
+## API boundaries
+
+- `/api/auth/login`, `/api/auth/logout`, `/api/auth/session` manage the signed session.
+- `/api/workflow` loads and saves the authenticated workflow when Neon is enabled.
+- `/api/process` is authenticated and keeps the NVIDIA key on the server. It owns model fallback and context-window errors.
+
+The middleware protects workspace, settings, workflow, and processing routes. Credentials and model keys are never sent to the client.

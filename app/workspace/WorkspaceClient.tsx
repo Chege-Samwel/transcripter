@@ -72,6 +72,7 @@ export default function WorkspaceClient() {
   const [hydrated, setHydrated] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [error, setError] = useState("");
+  const serverSaveOkRef = useRef(false);
   const transcriptInputRef = useRef<HTMLInputElement>(null);
 
   const batches = useMemo(() => chunkTranscript(config.transcript, config.batchTokens), [config.transcript, config.batchTokens]);
@@ -90,12 +91,20 @@ export default function WorkspaceClient() {
       } catch { /* use server state */ }
       try {
         const response = await fetch("/api/workflow", { cache: "no-store" });
-        const data = (await response.json()) as { workflow?: { config?: unknown; result?: string; crossChecks?: SectionCheck[] } | null };
+        const data = (await response.json()) as {
+          workflow?: { config?: unknown; result?: string; crossChecks?: SectionCheck[] } | null;
+          database?: { configured?: boolean; error?: string };
+        };
         const payload = data.workflow || localPayload;
         if (!cancelled && payload) {
           setConfig(normalizeConfig(payload.config));
           setResult(typeof payload.result === "string" ? payload.result : "");
           setCrossChecks(Array.isArray(payload.crossChecks) ? payload.crossChecks : []);
+        }
+        if (!cancelled && data.database && !data.database.configured) {
+          setNotice({ tone: "info", message: "Server saving is off — set DATABASE_URL to store this workflow in your Neon database. Until then, changes stay in this browser." });
+        } else if (!cancelled && data.database?.error) {
+          setNotice({ tone: "error", message: `Database: ${data.database.error}` });
         }
       } catch {
         if (!cancelled && localPayload) {
@@ -116,7 +125,19 @@ export default function WorkspaceClient() {
     const payload = { config, result, crossChecks };
     try { localStorage.setItem("transcripter-workflow-v2", JSON.stringify(payload)); } catch { /* server persistence remains available */ }
     const timer = window.setTimeout(() => {
-      void fetch("/api/workflow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      void (async () => {
+        try {
+          const response = await fetch("/api/workflow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+          const data = (await response.json()) as { persisted?: boolean; configured?: boolean; error?: string };
+          if (data.persisted) {
+            serverSaveOkRef.current = true;
+          } else if (data.configured && data.error && serverSaveOkRef.current) {
+            // Only alert when saving used to work — a never-configured
+            // database is already explained by the load-time notice.
+            setNotice({ tone: "error", message: `Server save failed: ${data.error}` });
+          }
+        } catch { /* the draft stays in the browser when the server is unreachable */ }
+      })();
     }, 700);
     return () => window.clearTimeout(timer);
   }, [config, result, crossChecks, hydrated]);

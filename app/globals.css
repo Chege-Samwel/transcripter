@@ -249,6 +249,12 @@ a { color: inherit; text-decoration: none; }
 .settings-fields .master-control { min-height: 145px; font: 10px/1.65 var(--mono); }
 .settings-callout { display: flex; align-items: flex-start; gap: 8px; margin-top: 21px; padding: 11px 12px; color: #5e8177; border: 1px solid #cbe2d9; border-radius: 8px; background: #f2faf6; font-size: 10px; line-height: 1.5; }
 .settings-callout svg { flex: 0 0 auto; color: var(--teal); }
+.settings-callout span { flex: 1; }
+.settings-callout code { font-family: var(--mono, ui-monospace, monospace); font-size: 9px; background: rgba(255, 255, 255, 0.6); border: 1px solid rgba(94, 129, 119, 0.25); border-radius: 4px; padding: 1px 4px; }
+.settings-callout.warn { color: var(--teal-dark); border-color: #c8e0d9; background: var(--teal-soft); }
+.settings-callout.warn svg { color: var(--teal-dark); }
+.settings-callout.error { color: var(--red); border-color: #efccc7; background: var(--red-soft); }
+.settings-callout.error svg { color: var(--red); }
 .mono-control { font-family: var(--mono) !important; font-size: 10px !important; }
 .alternative-list { display: flex; flex-direction: column; gap: 8px; }
 .alternative-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink-2); font-size: 11px; font-weight: 700; }

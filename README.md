@@ -39,20 +39,29 @@ Copy `.env.example` to your deployment environment. Required values:
 
 `AUTH_PASSWORD` is supported for local setup, but a bcrypt hash is preferred in production. Generate one with any trusted bcrypt tool before deploying.
 
-### Optional Neon persistence
+> **Local `.env` caveat:** Next.js interpolates `$`-references when loading `.env` files, which mangles bcrypt hashes (`$2b$10$…`). In a local `.env`, escape every dollar sign: `AUTH_PASSWORD_HASH=\$2b\$10\$…`. On Vercel/Render the env var is injected verbatim — store the plain hash there.
+
+### Optional database persistence (Neon)
 
 The app works with browser draft storage when no database is configured. For server persistence across devices:
 
 1. Create a Neon Postgres database.
-2. Run [`db/schema.sql`](./db/schema.sql) once.
-3. Set `DATABASE_URL` in the deployment environment.
+2. Set `DATABASE_URL` in the deployment environment (standard Postgres connection string; the pooled `-pooler` string works too).
 
-The authenticated user's workflow settings, latest output, and cross-check results are then stored by email. The browser remains a resilient draft cache if the database is temporarily unavailable.
+That is all. The storage layer is a standard `pg` connection pool, and the schema in [`db/migrations/`](./db/migrations) is applied **automatically on first use** — there is no manual SQL step, so a fresh Neon database starts working immediately.
+
+- `npm run db:migrate` — apply pending migrations manually (pre-provisioning, or after adding a migration). Safe to re-run.
+- `npm run db:generate` — regenerate `lib/migrations.generated.ts` from the `.sql` files (also runs before `dev` and `build`); commit both files together.
+- `npm run db:serve` — start a throwaway local Postgres for development without Docker.
+- `DISABLE_AUTO_MIGRATE=1` — turn off runtime auto-migration (manual mode).
+- `db/schema.sql` — full current schema for reference; migrations are the source of truth.
+
+The authenticated user's workflow settings, latest output, and cross-check results are stored by email. Verify connectivity any time in **Settings → Storage** (or inspect the `database` field of `GET /api/workflow`). The browser remains a resilient draft cache if the database is temporarily unavailable.
 
 ## API boundaries
 
 - `/api/auth/login`, `/api/auth/logout`, `/api/auth/session` manage the signed session.
-- `/api/workflow` loads and saves the authenticated workflow when Neon is enabled.
+- `/api/workflow` loads and saves the authenticated workflow, and reports database status in the `database` field (configured, applied migrations, errors).
 - `/api/process` is authenticated and keeps the NVIDIA key on the server. It owns model fallback and context-window errors.
 
 The middleware protects workspace, settings, workflow, and processing routes. Credentials and model keys are never sent to the client.

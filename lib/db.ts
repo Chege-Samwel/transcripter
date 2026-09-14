@@ -1,5 +1,10 @@
-import { neon } from "@neondatabase/serverless";
+import { databaseConfigured, databaseUrl, describeDatabaseError, getPool } from "./database";
+import { databaseReadiness } from "./migrate";
 import type { SectionCheck, WorkflowConfig } from "./workflow";
+
+// Public surface for API routes.
+export { databaseConfigured } from "./database";
+export { databaseReadiness, type DatabaseReadiness } from "./migrate";
 
 export type StoredWorkflow = {
   config: WorkflowConfig;
@@ -8,58 +13,81 @@ export type StoredWorkflow = {
   updatedAt?: string;
 };
 
-function databaseUrl() {
-  return process.env.DATABASE_URL?.trim();
-}
+export type SaveResult = {
+  persisted: boolean;
+  error?: string;
+};
 
-export function databaseConfigured() {
-  return Boolean(databaseUrl());
+function parseJson(value: unknown): unknown {
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value;
 }
 
 export async function loadWorkflow(email: string): Promise<StoredWorkflow | null> {
-  const url = databaseUrl();
-  if (!url) return null;
-  const sql = neon(url);
+  if (!databaseConfigured()) return null;
+  const readiness = await databaseReadiness();
+  if (readiness.error) return null;
   try {
-    const rows = await sql`SELECT config, result, cross_checks, updated_at FROM transcripter_workflows WHERE owner_email = ${email} LIMIT 1` as {
-      config: unknown;
-      result: string;
-      cross_checks: unknown;
-      updated_at: string;
-    }[];
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      config: row.config as WorkflowConfig,
-      result: row.result || "",
-      crossChecks: Array.isArray(row.cross_checks) ? row.cross_checks as SectionCheck[] : [],
-      updatedAt: row.updated_at,
-    };
+    const client = await getPool().connect();
+    try {
+      const result = await client.query(
+        "SELECT config, result, cross_checks, updated_at FROM transcripter_workflows WHERE owner_email = $1 LIMIT 1",
+        [email],
+      );
+      const row = result.rows[0] as
+        | { config: unknown; result: string | null; cross_checks: unknown; updated_at: Date | string | null }
+        | undefined;
+      if (!row) return null;
+      const updatedAt = row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at || undefined;
+      return {
+        config: (parseJson(row.config) || {}) as WorkflowConfig,
+        result: row.result || "",
+        crossChecks: Array.isArray(parseJson(row.cross_checks)) ? (parseJson(row.cross_checks) as SectionCheck[]) : [],
+        updatedAt,
+      };
+    } finally {
+      client.release();
+    }
   } catch (error) {
-    // A missing table should be fixed with db/schema.sql, not surfaced as a
-    // broken editing experience. The route reports persistence separately.
-    console.error("Could not load workflow from Neon", error);
+    // Read path stays graceful: the browser draft cache covers a temporary
+    // database outage. The /api/workflow response reports the real error.
+    console.error("Could not load workflow from database", error);
     return null;
   }
 }
 
-export async function saveWorkflow(email: string, workflow: StoredWorkflow) {
+export async function saveWorkflow(email: string, workflow: StoredWorkflow): Promise<SaveResult> {
   const url = databaseUrl();
-  if (!url) return false;
-  const sql = neon(url);
+  if (!url) {
+    return { persisted: false, error: "No database is configured. Set DATABASE_URL to enable server saving." };
+  }
+  const readiness = await databaseReadiness();
+  if (readiness.error) return { persisted: false, error: readiness.error };
   try {
-    await sql`
-      INSERT INTO transcripter_workflows (owner_email, config, result, cross_checks, updated_at)
-      VALUES (${email}, ${JSON.stringify(workflow.config)}::jsonb, ${workflow.result || ""}, ${JSON.stringify(workflow.crossChecks || [])}::jsonb, NOW())
-      ON CONFLICT (owner_email) DO UPDATE SET
-        config = EXCLUDED.config,
-        result = EXCLUDED.result,
-        cross_checks = EXCLUDED.cross_checks,
-        updated_at = NOW()
-    `;
-    return true;
+    const client = await getPool().connect();
+    try {
+      await client.query(
+        `INSERT INTO transcripter_workflows (owner_email, config, result, cross_checks, updated_at)
+         VALUES ($1, $2, $3, $4, NOW())
+         ON CONFLICT (owner_email) DO UPDATE SET
+           config = EXCLUDED.config,
+           result = EXCLUDED.result,
+           cross_checks = EXCLUDED.cross_checks,
+           updated_at = NOW()`,
+        [email, JSON.stringify(workflow.config), workflow.result || "", JSON.stringify(workflow.crossChecks || [])],
+      );
+    } finally {
+      client.release();
+    }
+    return { persisted: true };
   } catch (error) {
-    console.error("Could not save workflow to Neon", error);
-    return false;
+    console.error("Could not save workflow to database", error);
+    return { persisted: false, error: describeDatabaseError(error) };
   }
 }

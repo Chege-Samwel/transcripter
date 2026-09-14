@@ -22,7 +22,7 @@ export default function LoginClient({ previewCredentials }: { previewCredentials
       });
       const data = (await response.json()) as { ok?: boolean; error?: string };
       if (!response.ok || !data.ok) throw new Error(data.error || "Could not sign in.");
-      const sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
+      const sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "include" });
       const session = (await sessionResponse.json()) as { authenticated?: boolean };
       if (!session.authenticated) throw new Error("The session cookie was not accepted. Check the workspace domain and try again.");
       const next = searchParams.get("next");

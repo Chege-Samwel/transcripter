@@ -68,11 +68,18 @@ export function getSession() {
 
 export function sessionCookieOptions(request?: Request) {
   const forwardedProtocol = request?.headers.get("x-forwarded-proto");
-  const isHttps = forwardedProtocol === "https" || request?.url.startsWith("https://");
+  const forwardedHost = request?.headers.get("x-forwarded-host") || request?.headers.get("host") || "";
+  const origin = request?.headers.get("origin") || "";
+  const isHttps = forwardedProtocol === "https" || request?.url.startsWith("https://") || origin.startsWith("https://");
+  // The hosted preview is rendered inside an iframe. SameSite=Lax cookies are
+  // not sent in that context, so use the explicit cross-site mode whenever the
+  // request came through an HTTPS preview/proxy.
+  const isHostedPreview = /(?:\.e2b\.app|\.vercel\.app)$/i.test(forwardedHost.split(":")[0]) || /(?:\.e2b\.app|\.vercel\.app)/i.test(origin);
+  const secure = Boolean(isHttps || isHostedPreview);
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production" ? Boolean(isHttps) : false,
-    sameSite: "lax" as const,
+    secure,
+    sameSite: secure ? "none" as const : "lax" as const,
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   };

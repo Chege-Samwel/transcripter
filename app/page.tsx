@@ -189,7 +189,7 @@ function normalizeConfig(value: unknown): WorkflowConfig {
   if (!value || typeof value !== "object") return { ...DEFAULT_CONFIG, fallbackModels: [...DEFAULT_CONFIG.fallbackModels] };
   const candidate = value as Partial<WorkflowConfig>;
   const fallbackModels = Array.isArray(candidate.fallbackModels)
-    ? candidate.fallbackModels.filter((model): model is string => typeof model === "string").slice(0, 3)
+    ? candidate.fallbackModels.filter((model): model is string => typeof model === "string").slice(0, 8)
     : DEFAULT_CONFIG.fallbackModels;
   return {
     ...DEFAULT_CONFIG,
@@ -400,6 +400,20 @@ export default function Home() {
       fallbackModels[index] = value;
       return { ...current, fallbackModels };
     });
+  }, []);
+
+  const addFallback = useCallback(() => {
+    setConfig((current) => ({
+      ...current,
+      fallbackModels: current.fallbackModels.length < 8 ? [...current.fallbackModels, ""] : current.fallbackModels,
+    }));
+  }, []);
+
+  const removeFallback = useCallback((index: number) => {
+    setConfig((current) => ({
+      ...current,
+      fallbackModels: current.fallbackModels.filter((_, modelIndex) => modelIndex !== index),
+    }));
   }, []);
 
   const addTrace = useCallback((event: Omit<TraceEvent, "id" | "timestamp">) => {
@@ -767,7 +781,8 @@ export default function Home() {
             onDrop={handleDrop}
             onDragOver={(event) => event.preventDefault()}
             updateConfig={updateConfig}
-            updateFallback={updateFallback}
+            addFallback={addFallback}
+            removeFallback={removeFallback}
             runWorkflow={runWorkflow}
             onModelChange={onModelChange}
           />}
@@ -812,12 +827,13 @@ type WorkspaceProps = {
   onDrop: (event: DragEvent<HTMLDivElement>) => void;
   onDragOver: (event: DragEvent<HTMLDivElement>) => void;
   updateConfig: <K extends keyof WorkflowConfig>(key: K, value: WorkflowConfig[K]) => void;
-  updateFallback: (index: number, value: string) => void;
+  addFallback: () => void;
+  removeFallback: (index: number) => void;
   runWorkflow: () => void;
   onModelChange: (key: "primaryModel" | "fallback", index?: number) => (event: ChangeEvent<HTMLInputElement>) => void;
 };
 
-function WorkspaceView({ config, batches, sourceTokens, isRunning, transcriptInputRef, onTranscriptInput, onDrop, onDragOver, updateConfig, updateFallback, runWorkflow, onModelChange }: WorkspaceProps) {
+function WorkspaceView({ config, batches, sourceTokens, isRunning, transcriptInputRef, onTranscriptInput, onDrop, onDragOver, updateConfig, addFallback, removeFallback, runWorkflow, onModelChange }: WorkspaceProps) {
   const safeBatchPercent = clamp(Math.round((config.batchTokens / Math.max(config.contextWindow - 800, 1)) * 100), 1, 100);
   return <div className="workspace-view">
     <section className="panel source-panel" id="source-panel">
@@ -859,8 +875,7 @@ function WorkspaceView({ config, batches, sourceTokens, isRunning, transcriptInp
       <div className="model-grid">
         <label className="field-label wide-field">Primary model<input className="text-input mono-input" list="model-suggestions" value={config.primaryModel} onChange={onModelChange("primaryModel")} /></label>
         <label className="field-label">Context window<select className="text-input" value={config.contextWindow} onChange={(event) => updateConfig("contextWindow", Number(event.target.value))}><option value={8192}>8,192 tokens</option><option value={16384}>16,384 tokens</option><option value={32768}>32,768 tokens</option><option value={65536}>65,536 tokens</option><option value={131072}>131,072 tokens</option></select></label>
-        <label className="field-label">Fallback 01<input className="text-input mono-input" list="model-suggestions" value={config.fallbackModels[0] || ""} onChange={onModelChange("fallback", 0)} placeholder="Optional model" /></label>
-        <label className="field-label">Fallback 02<input className="text-input mono-input" list="model-suggestions" value={config.fallbackModels[1] || ""} onChange={onModelChange("fallback", 1)} placeholder="Optional model" /></label>
+        <div className="field-label fallback-field wide-field"><div className="fallback-heading"><span>Alternative models</span><span>{config.fallbackModels.filter(Boolean).length}/8 armed</span></div><div className="fallback-list">{config.fallbackModels.map((model, index) => <div className="fallback-row" key={`fallback-${index}`}><span className="fallback-index">{String(index + 1).padStart(2, "0")}</span><input className="text-input mono-input" list="model-suggestions" value={model} onChange={onModelChange("fallback", index)} placeholder="Add a fallback model" aria-label={`Alternative model ${index + 1}`} /><button className="fallback-remove" type="button" onClick={() => removeFallback(index)} aria-label={`Remove alternative model ${index + 1}`} title="Remove model"><Icon name="x" size={14} /></button></div>)}</div><button className="add-model-button" type="button" onClick={addFallback} disabled={config.fallbackModels.length >= 8}><Icon name="plus" size={14} />{config.fallbackModels.length >= 8 ? "Maximum of 8 alternatives" : "Add alternative model"}</button><small className="field-hint">Tried in order after the primary model. Saved with this workflow.</small></div>
         <label className="field-label">Batch target<input className="text-input" type="number" min={400} max={20000} value={config.batchTokens} onChange={(event) => updateConfig("batchTokens", clamp(Number(event.target.value) || 400, 400, 20000))} /><small className="field-hint">{formatNumber(batches.length)} planned batch{batches.length === 1 ? "" : "es"}</small></label>
         <label className="field-label">Overlap context<input className="text-input" type="number" min={0} max={1000} value={config.overlapTokens} onChange={(event) => updateConfig("overlapTokens", clamp(Number(event.target.value) || 0, 0, 1000))} /><small className="field-hint">Continuity only, never duplicated</small></label>
         <label className="field-label">Max output tokens<input className="text-input" type="number" min={256} max={16000} value={config.maxOutputTokens} onChange={(event) => updateConfig("maxOutputTokens", clamp(Number(event.target.value) || 256, 256, 16000))} /></label>

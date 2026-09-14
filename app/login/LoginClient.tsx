@@ -1,10 +1,9 @@
 'use client';
 
 import { FormEvent, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 export default function LoginClient({ previewCredentials }: { previewCredentials: boolean }) {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const [email, setEmail] = useState(previewCredentials ? "editor@local.test" : "");
   const [password, setPassword] = useState(previewCredentials ? "local-preview-only" : "");
@@ -23,9 +22,11 @@ export default function LoginClient({ previewCredentials }: { previewCredentials
       });
       const data = (await response.json()) as { ok?: boolean; error?: string };
       if (!response.ok || !data.ok) throw new Error(data.error || "Could not sign in.");
+      const sessionResponse = await fetch("/api/auth/session", { cache: "no-store", credentials: "same-origin" });
+      const session = (await sessionResponse.json()) as { authenticated?: boolean };
+      if (!session.authenticated) throw new Error("The session cookie was not accepted. Check the workspace domain and try again.");
       const next = searchParams.get("next");
-      router.replace(next?.startsWith("/") ? next : "/workspace");
-      router.refresh();
+      window.location.assign(next?.startsWith("/") ? next : "/workspace");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not sign in.");
       setBusy(false);

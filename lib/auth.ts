@@ -66,18 +66,20 @@ export function getSession() {
   return verifySessionToken(token);
 }
 
-export function sessionCookieOptions() {
+export function sessionCookieOptions(request?: Request) {
+  const forwardedProtocol = request?.headers.get("x-forwarded-proto");
+  const isHttps = forwardedProtocol === "https" || request?.url.startsWith("https://");
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV === "production" ? Boolean(isHttps) : false,
     sameSite: "lax" as const,
     path: "/",
     maxAge: SESSION_TTL_SECONDS,
   };
 }
 
-export function clearCookieOptions() {
-  return { ...sessionCookieOptions(), maxAge: 0 };
+export function clearCookieOptions(request?: Request) {
+  return { ...sessionCookieOptions(request), maxAge: 0 };
 }
 
 export function authConfiguration() {

@@ -28,7 +28,7 @@ export async function POST(request: NextRequest) {
     }
 
     const response = NextResponse.json({ ok: true, email });
-    response.cookies.set("transcripter_session", createSessionToken(email), sessionCookieOptions());
+    response.cookies.set("transcripter_session", createSessionToken(email), sessionCookieOptions(request));
     return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Authentication is not configured.";

@@ -25,11 +25,10 @@ async function testRetryPicksUpNewModel() {
   });
 
   // 3. User / Job tries to run with old model in request body
-  // Even if an old client sent a stale model or retired model name:
   const staleModel = "nvidia/llama-3.1-nemotron-ultra-253b-v1";
   const run1 = await fetch(`${BASE}/api/process`, {
     method: "POST",
-    headers: { Cookie: adminCookie, "Content-Type": "application/json" },
+    headers: { Cookie: adminCookie, "Content-Type": "application/json", "x-test-mock": "true" },
     body: JSON.stringify({
       stage: "normalize",
       text: "Test sample transcript line 1.\nTest sample transcript line 2.",
@@ -44,45 +43,47 @@ async function testRetryPicksUpNewModel() {
   assert.equal(run1.status, 200);
   console.log("✓ Run 1 executed successfully");
 
-  // 4. Admin updates models to model B
-  const modelB = "nvidia/llama-3.1-nemotron-70b-instruct";
+  // 4. Admin updates models to model B (the Lightning model)
+  const modelB = "nvidia/nemotron-3.5-lightning:free";
   const updateRes = await fetch(`${BASE}/api/admin/models`, {
     method: "POST",
     headers: { Cookie: adminCookie, "Content-Type": "application/json" },
-    body: JSON.stringify({ primaryModel: modelB, fallbackModels: ["meta/llama-3.3-70b-instruct"] }),
+    body: JSON.stringify({ primaryModel: modelB, fallbackModels: ["nvidia/nemotron-3.5-lightning"] }),
   });
   const updateData = await updateRes.json();
   assert.equal(updateData.models?.primaryModel, modelB);
   console.log(`✓ Admin updated system models to ${modelB}`);
 
-  // 5. Retry pass: executes and uses model B
+  // 5. Retry pass: executes and uses model B specifically
   const retryRun = await fetch(`${BASE}/api/process`, {
     method: "POST",
-    headers: { Cookie: adminCookie, "Content-Type": "application/json" },
+    headers: { Cookie: adminCookie, "Content-Type": "application/json", "x-test-mock": "true" },
     body: JSON.stringify({
       stage: "normalize",
       text: "Test sample transcript line 1.\nTest sample transcript line 2.",
       masterPrompt: "Clean text",
       formatRules: "standard",
       editRules: "standard",
-      // Notice: retry triggers /api/process which uses the newly updated system model
+      singleModelOnly: true,
+      // Retry triggers /api/process which uses the newly updated system model
     }),
   });
   const retryData = await retryRun.json();
   assert.equal(retryRun.status, 200);
   assert.ok(retryData.ok);
-  console.log("✓ Retry pass executed successfully with updated system models");
+  assert.equal(retryData.modelUsed, modelB, "Retry should use lightning model");
+  console.log("✓ Retry pass executed successfully with updated lightning model");
 
   // 6. Reset back to cascade default
   await fetch(`${BASE}/api/admin/models`, {
     method: "POST",
     headers: { Cookie: adminCookie, "Content-Type": "application/json" },
     body: JSON.stringify({
-      primaryModel: "nvidia/nemotron-3-ultra-550b-a55b",
-      fallbackModels: ["google/gemma-4-26b-a4b-it:free", "gemini-2.0-flash"],
+      primaryModel: "nvidia/nemotron-3.5-lightning:free",
+      fallbackModels: ["nvidia/nemotron-3.5-lightning", "nvidia/nemotron-3-ultra-550b-a55b"],
     }),
   });
-  console.log("✓ Reset models to default: nvidia/nemotron-3-ultra-550b-a55b");
+  console.log("✓ Reset models to default: nvidia/nemotron-3.5-lightning:free");
   console.log("\nRETRY TEST PASSED! 🎉\n");
 }
 

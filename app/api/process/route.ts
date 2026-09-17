@@ -24,6 +24,7 @@ type ProcessBody = {
   refineInstruction?: string;
   model?: string;
   fallbackModels?: string[];
+  singleModelOnly?: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;
   temperature?: number;
@@ -48,56 +49,6 @@ const stageInstructions: Record<Stage, string> = {
 
 function estimateTokens(value: string) {
   return Math.ceil(value.length / 4);
-}
-
-function cleanText(value: string) {
-  return value
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function demoTransform(stage: Stage, text: string, formatRules = "", editRules = "") {
-  const cleaned = cleanText(text);
-
-  if (stage === "normalize") {
-    return cleaned
-      .replace(/[“”]/g, '"')
-      .replace(/[‘’]/g, "'")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/\s+([,.!?;:])/g, "$1");
-  }
-
-  if (stage === "format") {
-    const paragraphs = cleaned
-      .split(/\n\s*\n/)
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean);
-    const wantsSpeakers = /speaker|label|dialogue/i.test(formatRules);
-    return paragraphs
-      .map((paragraph) => {
-        if (wantsSpeakers && /^[a-z][a-z0-9 _-]{1,24}\s*[-:]/i.test(paragraph)) {
-          const match = paragraph.match(/^([^\n:-]{1,24})\s*[-:]/i);
-          if (match) {
-            return `${match[1].trim().toUpperCase()}: ${paragraph.slice(match[0].length).trim()}`;
-          }
-        }
-        return paragraph;
-      })
-      .join("\n\n");
-  }
-
-  if (stage === "edit" || stage === "refine") {
-    let edited = cleaned;
-    if (/remove|omit|delete/i.test(editRules) && /filler|hesitation/i.test(editRules)) {
-      edited = edited.replace(/\b(um+|uh+|er+|you know)\b[,.]?\s*/gi, "");
-    }
-    edited = edited.replace(/\b([a-z]+)(\s+\1\b)+/gi, "$1");
-    return edited.trim();
-  }
-
-  return cleaned;
 }
 
 type SectionCheck = {
@@ -227,24 +178,35 @@ export async function POST(request: NextRequest) {
     const hasGoogleKey = Boolean(getGoogleApiKey());
     const hasAnyKey = hasNvidiaKey || hasOpenRouterKey || hasGoogleKey;
 
-    if (!hasAnyKey) {
-      const output = demoTransform(stage, text, formatRules, editRules);
+    const requestedModel = (body.model || systemModels.primaryModel || DEFAULT_SYSTEM_MODELS.primaryModel).trim();
+
+    // Support simulated response ONLY when explicitly requested by test runner
+    const isTestMock = request.headers.get("x-test-mock") === "true";
+    if (isTestMock) {
       const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
       return NextResponse.json({
         ok: true,
-        output,
+        output: text,
         checks,
-        modelUsed: "Local safe engine",
-        provider: "local",
+        modelUsed: requestedModel,
+        provider: "test-mock",
         fallbackUsed: false,
-        demo: true,
         kind,
-        warning: "No AI API key found (NVIDIA_API_KEY, OPENROUTER_API_KEY, or GEMINI_API_KEY). Used safe local engine.",
         estimatedTokens: requestTokens,
       });
     }
 
-    const requestedModel = (body.model || systemModels.primaryModel || DEFAULT_SYSTEM_MODELS.primaryModel).trim();
+    if (!hasAnyKey) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "No AI provider keys configured. Please add OPENROUTER_API_KEY, NVIDIA_API_KEY, or GEMINI_API_KEY in your settings to execute this pass.",
+          code: "NO_API_KEY",
+          retryable: false,
+        },
+        { status: 503 },
+      );
+    }
 
     try {
       const result = await fetchAICascade(
@@ -253,7 +215,11 @@ export async function POST(request: NextRequest) {
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        { temperature, maxTokens }
+        {
+          temperature,
+          maxTokens,
+          singleModelOnly: Boolean(body.singleModelOnly),
+        }
       );
 
       const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
@@ -269,7 +235,7 @@ export async function POST(request: NextRequest) {
         retryable: false,
       });
     } catch (error) {
-      const failure = error instanceof Error ? error.message : "AI generation failed across configured cascade.";
+      const failure = error instanceof Error ? error.message : "AI model execution failed.";
       await logError({
         ownerEmail: account.email,
         jobId: body.jobId,
@@ -279,21 +245,18 @@ export async function POST(request: NextRequest) {
         message: failure,
       });
 
-      // Safe local fallback so user pass never halts or breaks
-      const output = demoTransform(stage, text, formatRules, editRules);
-      const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
-      return NextResponse.json({
-        ok: true,
-        output,
-        checks,
-        modelUsed: "Local safe engine (Cascade fallback)",
-        provider: "local",
-        fallbackUsed: true,
-        demo: true,
-        kind,
-        warning: `AI cascade trial could not complete (${failure}). Processed with local engine.`,
-        estimatedTokens: requestTokens,
-      });
+      // No silent fallback to a local safe engine. Return the true error so the user
+      // can retry on that model or switch to another model from the status tracking popup.
+      return NextResponse.json(
+        {
+          ok: false,
+          error: failure,
+          code: "MODEL_FAILURE",
+          retryable: true,
+          modelAttempted: requestedModel,
+        },
+        { status: 502 },
+      );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not process this workflow request.";

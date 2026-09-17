@@ -205,7 +205,7 @@ async function run() {
   // 10. Test /api/process shows active model used
   const userProcessRes = await fetch(`${BASE}/api/process`, {
     method: "POST",
-    headers: { Cookie: userCookie, "Content-Type": "application/json" },
+    headers: { Cookie: userCookie, "Content-Type": "application/json", "x-test-mock": "true" },
     body: JSON.stringify({
       stage: "normalize",
       text: "hello   world  test  transcript",
@@ -215,25 +215,39 @@ async function run() {
       contextWindow: 16000,
       maxOutputTokens: 2000,
       temperature: 0.2,
-      model: "gemini-2.0-flash",
+      model: "nvidia/nemotron-3.5-lightning:free",
     }),
   });
   const userProcessData = await userProcessRes.json();
   assert.equal(userProcessRes.status, 200);
   assert.ok(userProcessData.ok);
-  assert.ok(userProcessData.modelUsed, "modelUsed should be present to show active model");
+  assert.equal(userProcessData.modelUsed, "nvidia/nemotron-3.5-lightning:free");
   console.log(`✓ Standard user /api/process succeeds with visible active model: ${userProcessData.modelUsed}`);
+
+  // Test that without test mock and without keys, local safe model fallback is removed
+  const noKeyProcessRes = await fetch(`${BASE}/api/process`, {
+    method: "POST",
+    headers: { Cookie: userCookie, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      stage: "normalize",
+      text: "hello   world  test  transcript",
+      model: "nvidia/nemotron-3.5-lightning:free",
+    }),
+  });
+  const noKeyData = await noKeyProcessRes.json();
+  assert.notEqual(noKeyData.modelUsed, "Local safe engine", "Should NOT fall back to local safe engine");
+  console.log("✓ Verified local safe engine fallback is removed (fails cleanly when keys are absent)");
 
   // Reset system models back to standard active defaults
   await fetch(`${BASE}/api/admin/models`, {
     method: "POST",
     headers: { Cookie: adminCookie, "Content-Type": "application/json" },
     body: JSON.stringify({
-      primaryModel: "nvidia/nemotron-3-ultra-550b-a55b",
-      fallbackModels: ["google/gemma-4-26b-a4b-it:free", "gemini-2.0-flash"],
+      primaryModel: "nvidia/nemotron-3.5-lightning:free",
+      fallbackModels: ["nvidia/nemotron-3.5-lightning", "nvidia/nemotron-3-ultra-550b-a55b"],
     }),
   });
-  console.log("✓ System models reset to active default: nvidia/nemotron-3-ultra-550b-a55b");
+  console.log("✓ System models reset to active default: nvidia/nemotron-3.5-lightning:free");
 
   // 11. Test Settings page HTML does NOT contain "Where work is saved" or "STORAGE"
   const settingsHtmlRes = await fetch(`${BASE}/settings`, {

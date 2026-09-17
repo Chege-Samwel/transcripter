@@ -11,8 +11,10 @@ export type SystemModels = {
 
 // Default models aligned with multi-provider cascade (NVIDIA, OpenRouter, Google Studio)
 export const DEFAULT_SYSTEM_MODELS: SystemModels = {
-  primaryModel: "nvidia/nemotron-3-ultra-550b-a55b",
+  primaryModel: "nvidia/nemotron-3.5-lightning:free",
   fallbackModels: [
+    "nvidia/nemotron-3.5-lightning",
+    "nvidia/nemotron-3-ultra-550b-a55b",
     "google/gemma-4-26b-a4b-it:free",
     "gemini-2.0-flash",
   ],

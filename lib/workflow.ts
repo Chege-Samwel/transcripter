@@ -94,6 +94,8 @@ export const PIPELINE: { key: StageKey; label: string; description: string }[] =
 ];
 
 export const MODEL_OPTIONS = [
+  "nvidia/nemotron-3.5-lightning:free",
+  "nvidia/nemotron-3.5-lightning",
   "nvidia/nemotron-3-ultra-550b-a55b",
   "google/gemma-4-26b-a4b-it:free",
   "gemini-2.0-flash",
@@ -259,8 +261,8 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
   editRules: DEFAULT_TEMPLATES[0].editRules,
   masterPrompt: DEFAULT_TEMPLATES[0].masterPrompt,
   outputGuide: DEFAULT_OUTPUT_GUIDE,
-  primaryModel: "nvidia/nemotron-3-ultra-550b-a55b",
-  fallbackModels: ["google/gemma-4-26b-a4b-it:free", "gemini-2.0-flash"],
+  primaryModel: "nvidia/nemotron-3.5-lightning:free",
+  fallbackModels: ["nvidia/nemotron-3.5-lightning", "nvidia/nemotron-3-ultra-550b-a55b", "google/gemma-4-26b-a4b-it:free", "gemini-2.0-flash"],
   contextWindow: 32768,
   batchTokens: 2000,
   overlapTokens: 120,

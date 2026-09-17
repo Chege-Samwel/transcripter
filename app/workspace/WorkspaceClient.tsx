@@ -83,6 +83,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const [overlayLog, setOverlayLog] = useState<OverlayLog[]>([]);
   const [overlayError, setOverlayError] = useState<{ message: string; retryable?: boolean } | null>(null);
   const [overlayBusy, setOverlayBusy] = useState(false);
+  const [singleModelOnly, setSingleModelOnly] = useState(false);
   const [summaryLeft, setSummaryLeft] = useState("");
   const [summaryRight, setSummaryRight] = useState("");
   const transcriptInputRef = useRef<HTMLInputElement>(null);
@@ -445,6 +446,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 editRules: activeConfig.editRules,
                 model: activeConfig.primaryModel,
                 fallbackModels: activeConfig.fallbackModels,
+                singleModelOnly: singleModelOnly || activeConfig.primaryModel.includes("lightning") || activeConfig.primaryModel.includes(":free"),
                 contextWindow: activeConfig.contextWindow,
                 maxOutputTokens: activeConfig.maxOutputTokens,
                 temperature: activeConfig.temperature,
@@ -875,6 +877,20 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
               <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "6px" }}>
                 <button
                   type="button"
+                  onClick={() => updateConfig("primaryModel", "nvidia/nemotron-3.5-lightning:free")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "nvidia/nemotron-3.5-lightning:free" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "nvidia/nemotron-3.5-lightning:free" ? "#fff" : "var(--ink)", cursor: "pointer", fontWeight: 600 }}
+                >
+                  ⚡ Nemotron 3.5 Lightning (Free)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "nvidia/nemotron-3.5-lightning")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "nvidia/nemotron-3.5-lightning" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "nvidia/nemotron-3.5-lightning" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  ⚡ Nemotron 3.5 Lightning
+                </button>
+                <button
+                  type="button"
                   onClick={() => updateConfig("primaryModel", "nvidia/nemotron-3-ultra-550b-a55b")}
                   style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "nvidia/nemotron-3-ultra-550b-a55b" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "nvidia/nemotron-3-ultra-550b-a55b" ? "#fff" : "var(--ink)", cursor: "pointer" }}
                 >
@@ -885,7 +901,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                   onClick={() => updateConfig("primaryModel", "google/gemma-4-26b-a4b-it:free")}
                   style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "google/gemma-4-26b-a4b-it:free" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "google/gemma-4-26b-a4b-it:free" ? "#fff" : "var(--ink)", cursor: "pointer" }}
                 >
-                  OpenRouter Gemma:free
+                  Gemma 4:free
                 </button>
                 <button
                   type="button"
@@ -1054,6 +1070,10 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
         log={overlayLog}
         error={overlayError}
         busy={overlayBusy}
+        activeModel={config.primaryModel}
+        onModelChange={(newModel) => updateConfig("primaryModel", newModel)}
+        singleModelOnly={singleModelOnly}
+        onToggleSingleModel={setSingleModelOnly}
         onRetry={() => void runWorkflow("retry")}
         onContinue={() => {
           pauseRef.current = true;

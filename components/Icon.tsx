@@ -23,11 +23,15 @@ export type IconName =
   | "history"
   | "users"
   | "book"
-  | "pause";
+  | "pause"
+  | "minimize"
+  | "maximize";
 
 export default function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": true } as const;
   const stroke = { stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (name === "minimize") return <svg {...common}><path {...stroke} d="M5 12h14" /></svg>;
+  if (name === "maximize") return <svg {...common}><path {...stroke} d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></svg>;
   if (name === "edit") return <svg {...common}><path {...stroke} d="m4 16.5-.8 3.8 3.8-.8L18.7 7.8a2.7 2.7 0 0 0-3.8-3.8L4 16.5Z" /><path {...stroke} d="m13.5 5.5 5 5" /></svg>;
   if (name === "settings") return <svg {...common}><path {...stroke} d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" /><path {...stroke} d="m19.2 14.8.1.2a1.7 1.7 0 0 1-2.4 2.4l-.2-.1a1.7 1.7 0 0 0-2.9 1.2v.2a1.7 1.7 0 0 1-3.4 0v-.2a1.7 1.7 0 0 0-2.9-1.2l-.2.1a1.7 1.7 0 0 1-2.4-2.4l.1-.2A1.7 1.7 0 0 0 5.9 12a1.7 1.7 0 0 0-1.7-1.7 1.7 1.7 0 1 1 0-3.4h.2a1.7 1.7 0 0 0 1.5-2.7l-.1-.2a1.7 1.7 0 0 1 2.4-2.4l.2.1A1.7 1.7 0 0 0 11.1.5h.2a1.7 1.7 0 0 1 3.4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.2-.1a1.7 1.7 0 0 1 2.4 2.4l-.1.2A1.7 1.7 0 0 0 21.6 7h.2a1.7 1.7 0 0 1 0 3.4h-.2a1.7 1.7 0 0 0-1.5 2.7l-.1.2Z" /></svg>;
   if (name === "logout") return <svg {...common}><path {...stroke} d="M10 4H5.5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1H10M15 16l4-4-4-4M19 12H9" /></svg>;

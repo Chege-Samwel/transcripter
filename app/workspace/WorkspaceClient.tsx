@@ -339,7 +339,11 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
               }),
             },
             {
-              retries: 2,
+              // One client retry, not two: the server already walks the whole
+              // fallback chain inside a single invocation, and it answers
+              // retryable:false when a retry cannot help. Two more full
+              // re-sends is what turned one slow batch into three 504s.
+              retries: 1,
               onRetry: (attempt, reason) => pushLog(`Retrying ${stage.label} (${attempt})`, "info", reason),
             },
           );
@@ -492,7 +496,8 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           jobId: current?.id,
         }),
       },
-      { retries: 2, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
+      // See the batch loop: the server retries internally, so keep this to one.
+      { retries: 1, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
     );
     if (!ok || !data.output?.trim()) {
       setOverlayBusy(false);

@@ -3,9 +3,43 @@ import { assertCanBookJob, getCurrentUser } from "../../../lib/account";
 import { logError } from "../../../lib/errors";
 import { capToWords, countWords } from "../../../lib/limits";
 import { sleep } from "../../../lib/http";
+import { attemptTimeout, createDeadline } from "../../../lib/budget";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+/**
+ * Time budget for the model fan-out.
+ *
+ * Before this, one attempt could wait 50s, be retried 3 times with backoff
+ * (151.5s), and that was repeated for every model in the chain — 454.5s with
+ * the default 3-model chain and up to 1363.5s with a full 9-model chain. Any
+ * run past `maxDuration` is killed by Vercel, which answers the browser with a
+ * bare 504 and no body, so the UI could not say why the pass stopped.
+ *
+ * The budget below is derived from `maxDuration`, so raising the project's
+ * function limit only requires changing that one number.
+ */
+const PLATFORM_BUDGET_MS = maxDuration * 1000;
+/** Room for the final response, error logging, and the platform's own overhead. */
+const RESERVED_MS = 6_000;
+/** An attempt with less time than this cannot plausibly complete a completion. */
+const MIN_ATTEMPT_MS = 4_000;
+/** Ceiling for a single call, so a huge budget does not mean one huge wait. */
+const PER_ATTEMPT_CAP_MS = 20_000;
+/** Retries per model, inside the shared budget. */
+const MAX_ATTEMPTS_PER_MODEL = 2;
+/** Backoff before a retry, ms, by attempt number. */
+const RETRY_BACKOFF_MS = [400, 900];
+
+/** Thrown when the invocation budget runs out; never worth starting another model. */
+class BudgetExhausted extends Error {
+  readonly code = "TIMEOUT";
+  constructor(message: string) {
+    super(message);
+    this.name = "BudgetExhausted";
+  }
+}
 
 type Stage = "normalize" | "format" | "edit" | "crosscheck" | "refine";
 
@@ -27,7 +61,12 @@ type ProcessBody = {
   jobId?: string;
 };
 
-const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
+const DEFAULT_NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
+
+/** Overridable so tests and self-hosted gateways can point elsewhere. */
+function nvidiaEndpoint() {
+  return process.env.NVIDIA_ENDPOINT?.trim() || DEFAULT_NVIDIA_ENDPOINT;
+}
 
 const stageInstructions: Record<Stage, string> = {
   normalize:
@@ -149,14 +188,15 @@ async function callNvidia(
   messages: { role: "system" | "user"; content: string }[],
   temperature: number,
   maxTokens: number,
+  timeoutMs: number,
 ) {
   const key = process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY;
   if (!key) throw new Error("NO_NVIDIA_KEY");
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 50_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(NVIDIA_ENDPOINT, {
+    const response = await fetch(nvidiaEndpoint(), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
@@ -182,6 +222,13 @@ async function callNvidia(
     const output = Array.isArray(content) ? content.map((part) => part.text || "").join("") : content;
     if (!output?.trim()) throw new Error("The model returned an empty response.");
     return output.trim();
+  } catch (error) {
+    // Turn the opaque "This operation was aborted" into something an editor can
+    // act on. Keeps the word "timeout" so isRetryableModelError still matches.
+    if (error instanceof Error && (error.name === "AbortError" || controller.signal.aborted)) {
+      throw new Error(`The model timed out after ${Math.round(timeoutMs / 1000)}s.`);
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -192,24 +239,50 @@ async function callNvidiaWithRetry(
   messages: { role: "system" | "user"; content: string }[],
   temperature: number,
   maxTokens: number,
+  deadline: ReturnType<typeof createDeadline>,
+  chainLength: number,
   onRetry?: (attempt: number, reason: string) => void,
 ) {
   let lastError = "Model request failed.";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS_PER_MODEL; attempt += 1) {
+    if (!deadline.hasRoom(MIN_ATTEMPT_MS)) {
+      throw new BudgetExhausted(
+        `Ran out of the ${maxDuration}s function budget before ${model} could answer.`,
+      );
+    }
+    const timeoutMs = Math.min(
+      attemptTimeout(deadline, chainLength, MIN_ATTEMPT_MS, PER_ATTEMPT_CAP_MS),
+      deadline.remaining(),
+    );
     try {
-      return await callNvidia(model, messages, temperature, maxTokens);
+      return await callNvidia(model, messages, temperature, maxTokens, timeoutMs);
     } catch (error) {
+      if (error instanceof BudgetExhausted) throw error;
       lastError = error instanceof Error ? error.message : "Unknown model error.";
-      if (!isRetryableModelError(lastError) || attempt === 2) throw error;
+      if (!isRetryableModelError(lastError) || attempt === MAX_ATTEMPTS_PER_MODEL - 1) throw error;
       onRetry?.(attempt + 1, lastError);
-      await sleep(500 * 2 ** attempt);
+      await sleep(RETRY_BACKOFF_MS[attempt] ?? 400);
     }
   }
   throw new Error(lastError);
 }
 
 export async function POST(request: NextRequest) {
-  const account = await getCurrentUser();
+  // Resolved before the try/catch on purpose, but never allowed to throw: an
+  // uncaught error escapes the handler and Vercel reports it as a bare
+  // 502 FUNCTION_INVOCATION_FAILED with no body, which is indistinguishable
+  // from the MODEL_FAILURE 502 this route returns on purpose.
+  let account: Awaited<ReturnType<typeof getCurrentUser>>;
+  try {
+    account = await getCurrentUser();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not verify this session.";
+    console.error("Transcripter: session lookup failed", error);
+    return NextResponse.json(
+      { ok: false, error: message, retryable: true, code: "SESSION_ERROR" },
+      { status: 500 },
+    );
+  }
   if (!account) return NextResponse.json({ ok: false, error: "Authentication required." }, { status: 401 });
   try {
     const body = (await request.json()) as ProcessBody;
@@ -321,7 +394,15 @@ export async function POST(request: NextRequest) {
     }
 
     const attempts: { model: string; error: string }[] = [];
+    const deadline = createDeadline(PLATFORM_BUDGET_MS - RESERVED_MS);
+    let budgetExhausted = false;
     for (const model of models) {
+      // Stop before starting a model that cannot get a viable attempt; the
+      // platform would otherwise kill us mid-call and return a bodyless 504.
+      if (!deadline.hasRoom(MIN_ATTEMPT_MS)) {
+        budgetExhausted = true;
+        break;
+      }
       try {
         const output = await callNvidiaWithRetry(
           model,
@@ -331,6 +412,8 @@ export async function POST(request: NextRequest) {
           ],
           temperature,
           maxTokens,
+          deadline,
+          models.length,
         );
         const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
         return NextResponse.json({
@@ -345,9 +428,33 @@ export async function POST(request: NextRequest) {
           retryable: false,
         });
       } catch (error) {
+        if (error instanceof BudgetExhausted) {
+          budgetExhausted = true;
+          attempts.push({ model, error: error.message });
+          break;
+        }
         const message = error instanceof Error ? error.message : "Unknown model error.";
         attempts.push({ model, error: message });
       }
+    }
+
+    if (budgetExhausted) {
+      const message = `The model chain did not finish inside the ${maxDuration}-second function limit. This batch is about ${requestTokens.toLocaleString()} input tokens — lower the batch size in Settings, or raise the function's max duration in Vercel.`;
+      await logError({
+        ownerEmail: account.email,
+        jobId: body.jobId,
+        stage,
+        batch: body.batch?.index,
+        code: "TIMEOUT",
+        message,
+        detail: { attempts, kind, budgetMs: PLATFORM_BUDGET_MS - RESERVED_MS },
+      });
+      // retryable:false — an identical retry burns another full invocation and
+      // almost always fails the same way. The UI offers a manual retry.
+      return NextResponse.json(
+        { ok: false, error: message, attempts, retryable: false, code: "TIMEOUT" },
+        { status: 504 },
+      );
     }
 
     const failure = attempts[attempts.length - 1]?.error || "Every configured model failed.";

@@ -47,8 +47,14 @@ export async function requestJson<T = Record<string, unknown>>(
         }
         return { ok: false, status: response.status, data: { error: lastReason, code: "BAD_RESPONSE" } as T };
       }
-      const payload = data as { ok?: boolean; error?: string };
-      const retryableHttp = response.status === 429 || response.status >= 500;
+      const payload = data as { ok?: boolean; error?: string; retryable?: boolean };
+      // A 5xx body carrying `retryable: false` is a deterministic failure the
+      // server already diagnosed (bad model credentials, unknown model, demo
+      // cap, exhausted function budget). Re-sending it just repeats the same
+      // expensive work — /api/process retries internally across fallback
+      // models, so a client-side re-send multiplies the cost by three.
+      const serverSaysFinal = payload.retryable === false;
+      const retryableHttp = !serverSaysFinal && (response.status === 429 || response.status >= 500);
       if (retryableHttp && attempt < retries) {
         lastReason = payload.error || `HTTP ${response.status}`;
         control.onRetry?.(attempt + 1, lastReason);

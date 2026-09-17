@@ -28,7 +28,13 @@ type ProcessBody = {
   jobId?: string;
 };
 
-const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
+function getEndpoint() {
+  const custom = process.env.NVIDIA_ENDPOINT?.trim() || process.env.AI_ENDPOINT?.trim();
+  if (custom) return custom;
+  const baseUrl = process.env.NVIDIA_BASE_URL?.trim();
+  if (baseUrl) return `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  return "https://integrate.api.nvidia.com/v1/chat/completions";
+}
 
 const stageInstructions: Record<Stage, string> = {
   normalize:
@@ -98,6 +104,7 @@ function demoTransform(stage: Stage, text: string, formatRules = "", editRules =
 }
 
 function isRetryableModelError(message: string) {
+  if (/404|410|not found|deprecated|retired/i.test(message)) return false;
   return /abort|timeout|429|rate|503|502|504|network|fetch|ECONN|ETIMEDOUT|empty response/i.test(message);
 }
 
@@ -133,15 +140,19 @@ function checkSection(text: string, section: number): SectionCheck {
   };
 }
 
-function modelError(status: number, body: string) {
-  if (status === 401 || status === 403) return "NVIDIA authentication failed. Check NVIDIA_API_KEY in Vercel settings.";
-  if (status === 429) return "The model is rate limited. The next configured fallback will be tried.";
-  if (status === 413) return "The model rejected this batch because it is too large for the selected context window.";
+function modelError(status: number, body: string, model?: string) {
+  const tag = model ? `[${model}] ` : "";
+  if (status === 401 || status === 403) return `${tag}NVIDIA authentication failed. Check your NVIDIA_API_KEY.`;
+  if (status === 429) return `${tag}The model is rate limited. Falling back to alternative model.`;
+  if (status === 413) return `${tag}The model rejected this batch because it is too large for the selected context window.`;
+  if (status === 404) return `${tag}Model not found (404). This model ID is inactive or not available on the endpoint.`;
+  if (status === 410) return `${tag}Model deprecated/retired (410). The endpoint no longer serves this model.`;
   try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } };
-    return parsed.error?.message || `Model request failed with status ${status}.`;
+    const parsed = JSON.parse(body) as { error?: { message?: string } | string; detail?: string; message?: string };
+    const errText = typeof parsed.error === "string" ? parsed.error : parsed.error?.message || parsed.detail || parsed.message;
+    return errText ? `${tag}${errText}` : `${tag}Model request failed with status ${status}.`;
   } catch {
-    return `Model request failed with status ${status}.`;
+    return `${tag}Model request failed with status ${status}.`;
   }
 }
 
@@ -151,16 +162,17 @@ async function callNvidia(
   temperature: number,
   maxTokens: number,
 ) {
-  const key = process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY;
+  const key = (process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY || "").trim();
   if (!key) throw new Error("NO_NVIDIA_KEY");
 
+  const endpoint = getEndpoint();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 50_000);
   try {
-    const response = await fetch(NVIDIA_ENDPOINT, {
+    const response = await fetch(endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key}`,
+        Authorization: key.startsWith("Bearer ") ? key : `Bearer ${key}`,
         "Content-Type": "application/json",
         Accept: "application/json",
       },
@@ -175,7 +187,7 @@ async function callNvidia(
       signal: controller.signal,
     });
     const raw = await response.text();
-    if (!response.ok) throw new Error(modelError(response.status, raw));
+    if (!response.ok) throw new Error(modelError(response.status, raw, model));
     const parsed = JSON.parse(raw) as {
       choices?: { message?: { content?: string | Array<{ text?: string }> } }[];
     };
@@ -280,12 +292,10 @@ export async function POST(request: NextRequest) {
 
     const isAdmin = account.role === "admin";
     const systemModels = await getSystemModels();
-    // Non-admin users cannot configure or override models: always use system models set by admin
-    const primary = isAdmin && body.model?.trim() ? body.model.trim() : systemModels.primaryModel;
-    const fallbacks = isAdmin && Array.isArray(body.fallbackModels) && body.fallbackModels.length > 0
-      ? body.fallbackModels.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
-      : systemModels.fallbackModels;
-    const models = Array.from(new Set([primary, ...fallbacks]));
+    // System models configured by admin are platform-wide. Always execute with the authoritative system models.
+    const primary = systemModels.primaryModel;
+    const fallbacks = systemModels.fallbackModels;
+    const models = Array.from(new Set([primary, ...fallbacks].filter(Boolean)));
     const rawTemperature = Number(body.temperature);
     const temperature = Math.min(1, Math.max(0, Number.isFinite(rawTemperature) ? rawTemperature : 0.2));
     const rawMaxTokens = Number(body.maxOutputTokens);

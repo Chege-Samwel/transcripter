@@ -1,6 +1,6 @@
 import { databaseConfigured, describeDatabaseError, getPool } from "./database";
 import { databaseReadiness } from "./migrate";
-import { MODEL_OPTIONS, MAX_ALTERNATIVES } from "./workflow";
+import { MAX_ALTERNATIVES } from "./workflow";
 
 export type SystemModels = {
   primaryModel: string;
@@ -9,13 +9,26 @@ export type SystemModels = {
   updatedBy?: string;
 };
 
+// Actively supported models on NVIDIA NIM API catalog
 export const DEFAULT_SYSTEM_MODELS: SystemModels = {
-  primaryModel: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+  primaryModel: "meta/llama-3.3-70b-instruct",
   fallbackModels: [
-    "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-    "meta/llama-3.1-70b-instruct",
+    "nvidia/llama-3.1-nemotron-70b-instruct",
+    "meta/llama-3.1-8b-instruct",
   ],
 };
+
+const RETIRED_MODELS = new Set([
+  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+  "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+  "meta/llama-3.1-70b-instruct",
+]);
+
+function sanitizeModel(model: string, fallback: string): string {
+  const trimmed = (model || "").trim();
+  if (!trimmed || RETIRED_MODELS.has(trimmed)) return fallback;
+  return trimmed;
+}
 
 let cachedModels: SystemModels = { ...DEFAULT_SYSTEM_MODELS };
 
@@ -37,14 +50,24 @@ export async function getSystemModels(): Promise<SystemModels> {
         const row = result.rows[0];
         const val = typeof row.value === "string" ? JSON.parse(row.value) : row.value;
         if (val && typeof val === "object") {
-          const primaryModel = typeof val.primaryModel === "string" && val.primaryModel.trim()
+          let primaryModel = typeof val.primaryModel === "string" && val.primaryModel.trim()
             ? val.primaryModel.trim()
             : DEFAULT_SYSTEM_MODELS.primaryModel;
-          const fallbackModels = Array.isArray(val.fallbackModels)
-            ? val.fallbackModels
+
+          primaryModel = sanitizeModel(primaryModel, DEFAULT_SYSTEM_MODELS.primaryModel);
+
+          let fallbackModels = Array.isArray(val.fallbackModels)
+            ? (val.fallbackModels as unknown[])
                 .filter((m: unknown): m is string => typeof m === "string" && m.trim().length > 0)
+                .map((m: string) => sanitizeModel(m, ""))
+                .filter(Boolean)
                 .slice(0, MAX_ALTERNATIVES)
             : DEFAULT_SYSTEM_MODELS.fallbackModels;
+
+          if (fallbackModels.length === 0) {
+            fallbackModels = [...DEFAULT_SYSTEM_MODELS.fallbackModels];
+          }
+
           const loaded: SystemModels = {
             primaryModel,
             fallbackModels,

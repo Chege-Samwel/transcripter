@@ -320,15 +320,32 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     setOverlayLog([]);
     setOverlaySteps(PIPELINE.map((stage) => ({ key: stage.key, label: stage.label, description: stage.description, status: "waiting" as const })));
 
+    // Refresh latest system settings if available
+    let activeConfig = config;
+    try {
+      const { data: wfData } = await requestJson<{ workflow?: { config?: unknown } | null }>("/api/workflow");
+      if (wfData?.workflow?.config) {
+        const latestNormalized = normalizeConfig(wfData.workflow.config);
+        activeConfig = {
+          ...config,
+          primaryModel: latestNormalized.primaryModel,
+          fallbackModels: latestNormalized.fallbackModels,
+        };
+        setConfig(activeConfig);
+      }
+    } catch {
+      // Continue with active configuration
+    }
+
     let currentJob = jobRef.current;
     if (mode === "fresh" || !currentJob) {
       const created = createJobRecord({
         ownerEmail: account.email,
         kind,
-        config: { ...config, transcript: source },
+        config: { ...activeConfig, transcript: source },
         source,
-        sourceFileName: config.sourceFileName,
-        title: jobTitleFromSource(source, config.sourceFileName),
+        sourceFileName: activeConfig.sourceFileName,
+        title: jobTitleFromSource(source, activeConfig.sourceFileName),
         id: currentJob?.id,
       });
       created.status = "running";
@@ -343,7 +360,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
         window.history.replaceState(null, "", `/workspace/${currentJob.id}`);
       }
     } else {
-      currentJob = { ...currentJob, status: "running", kind, source, config: { ...config, transcript: source } };
+      currentJob = { ...currentJob, status: "running", kind, source, config: { ...activeConfig, transcript: source } };
       await persist(currentJob);
     }
 
@@ -398,16 +415,12 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
               body: JSON.stringify({
                 stage: stage.key,
                 text: currentText,
-                masterPrompt: config.masterPrompt,
-                formatRules: config.formatRules,
-                editRules: config.editRules,
-                ...(isAdmin ? {
-                  model: config.primaryModel,
-                  fallbackModels: config.fallbackModels,
-                } : {}),
-                contextWindow: config.contextWindow,
-                maxOutputTokens: config.maxOutputTokens,
-                temperature: config.temperature,
+                masterPrompt: activeConfig.masterPrompt,
+                formatRules: activeConfig.formatRules,
+                editRules: activeConfig.editRules,
+                contextWindow: activeConfig.contextWindow,
+                maxOutputTokens: activeConfig.maxOutputTokens,
+                temperature: activeConfig.temperature,
                 batch: { index: batchIndex, total: workBatches.length },
                 contextBefore: continuity,
                 kind,
@@ -566,10 +579,6 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           formatRules: config.formatRules,
           editRules: `${config.editRules}\n\nRequested changes:\n${refineInstruction}`,
           refineInstruction,
-          ...(isAdmin ? {
-            model: config.primaryModel,
-            fallbackModels: config.fallbackModels,
-          } : {}),
           contextWindow: config.contextWindow,
           maxOutputTokens: config.maxOutputTokens,
           temperature: config.temperature,

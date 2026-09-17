@@ -94,11 +94,14 @@ export const PIPELINE: { key: StageKey; label: string; description: string }[] =
 ];
 
 export const MODEL_OPTIONS = [
-  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-  "nvidia/llama-3.1-nemotron-4b-instruct",
-  "meta/llama-3.1-70b-instruct",
+  "meta/llama-3.3-70b-instruct",
+  "nvidia/llama-3.1-nemotron-70b-instruct",
   "meta/llama-3.1-8b-instruct",
+  "meta/llama-3.2-3b-instruct",
+  "meta/llama-3.2-1b-instruct",
+  "mistralai/mistral-nemotron",
+  "mistralai/mixtral-8x7b-instruct",
+  "qwen/qwen2.5-72b-instruct",
 ];
 
 export const DEFAULT_OUTPUT_GUIDE: OutputGuide = {
@@ -255,8 +258,8 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
   editRules: DEFAULT_TEMPLATES[0].editRules,
   masterPrompt: DEFAULT_TEMPLATES[0].masterPrompt,
   outputGuide: DEFAULT_OUTPUT_GUIDE,
-  primaryModel: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  fallbackModels: ["nvidia/llama-3.1-nemotron-nano-vl-8b-v1", "meta/llama-3.1-70b-instruct"],
+  primaryModel: "meta/llama-3.3-70b-instruct",
+  fallbackModels: ["nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-8b-instruct"],
   contextWindow: 32768,
   batchTokens: 4500,
   overlapTokens: 180,

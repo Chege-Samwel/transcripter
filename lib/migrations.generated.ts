@@ -133,12 +133,14 @@ INSERT INTO transcripter_system_settings (key, value, updated_by)
 VALUES (
   'system_models',
   jsonb_build_object(
-    'primaryModel', 'nvidia/llama-3.1-nemotron-ultra-253b-v1',
-    'fallbackModels', jsonb_build_array('nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.1-70b-instruct')
+    'primaryModel', 'meta/llama-3.3-70b-instruct',
+    'fallbackModels', jsonb_build_array('nvidia/llama-3.1-nemotron-70b-instruct', 'meta/llama-3.1-8b-instruct')
   ),
   'system'
 )
-ON CONFLICT (key) DO NOTHING;
+ON CONFLICT (key) DO UPDATE SET
+  value = EXCLUDED.value
+  WHERE transcripter_system_settings.value->>'primaryModel' IN ('nvidia/llama-3.1-nemotron-ultra-253b-v1', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.1-70b-instruct');
 
 CREATE TABLE IF NOT EXISTS transcripter_workflow_templates (
   id TEXT PRIMARY KEY,

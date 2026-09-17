@@ -428,7 +428,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
               }),
             },
             {
-              retries: 2,
+              retries: 0,
               onRetry: (attempt, reason) => pushLog(`Retrying ${stage.label} (${attempt})`, "info", reason),
             },
           );
@@ -586,7 +586,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           jobId: current?.id,
         }),
       },
-      { retries: 2, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
+      { retries: 0, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
     );
     if (!ok || !data.output?.trim()) {
       setOverlayBusy(false);

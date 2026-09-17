@@ -1,8 +1,8 @@
--- Auto-upgrade system models to active live models on NVIDIA NIM API catalog
+-- Auto-upgrade system models to fast, active live models on NVIDIA NIM API catalog
 UPDATE transcripter_system_settings
 SET value = jsonb_build_object(
-  'primaryModel', 'meta/llama-3.3-70b-instruct',
-  'fallbackModels', jsonb_build_array('nvidia/llama-3.1-nemotron-70b-instruct', 'meta/llama-3.1-8b-instruct')
+  'primaryModel', 'meta/llama-3.1-8b-instruct',
+  'fallbackModels', jsonb_build_array('meta/llama-3.2-3b-instruct', 'nvidia/llama-3.1-nemotron-70b-instruct', 'meta/llama-3.3-70b-instruct')
 ),
 updated_at = NOW(),
 updated_by = 'migration_0004'

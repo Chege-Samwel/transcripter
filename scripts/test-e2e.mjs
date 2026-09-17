@@ -233,11 +233,11 @@ async function run() {
     method: "POST",
     headers: { Cookie: adminCookie, "Content-Type": "application/json" },
     body: JSON.stringify({
-      primaryModel: "meta/llama-3.3-70b-instruct",
-      fallbackModels: ["nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-8b-instruct"],
+      primaryModel: "meta/llama-3.1-8b-instruct",
+      fallbackModels: ["meta/llama-3.2-3b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
     }),
   });
-  console.log("✓ System models reset to active default: meta/llama-3.3-70b-instruct");
+  console.log("✓ System models reset to active default: meta/llama-3.1-8b-instruct");
 
   // 11. Test Settings page HTML does NOT contain "Where work is saved" or "STORAGE"
   const settingsHtmlRes = await fetch(`${BASE}/settings`, {

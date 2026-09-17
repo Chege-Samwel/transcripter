@@ -73,13 +73,13 @@ async function testRetryPicksUpNewModel() {
   assert.ok(retryData.ok);
   console.log("✓ Retry pass executed successfully with updated system models");
 
-  // 6. Reset back to meta/llama-3.3-70b-instruct
+  // 6. Reset back to meta/llama-3.1-8b-instruct
   await fetch(`${BASE}/api/admin/models`, {
     method: "POST",
     headers: { Cookie: adminCookie, "Content-Type": "application/json" },
     body: JSON.stringify({
-      primaryModel: "meta/llama-3.3-70b-instruct",
-      fallbackModels: ["nvidia/llama-3.1-nemotron-70b-instruct", "meta/llama-3.1-8b-instruct"],
+      primaryModel: "meta/llama-3.1-8b-instruct",
+      fallbackModels: ["meta/llama-3.2-3b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
     }),
   });
   console.log("✓ Reset models to default");

@@ -156,11 +156,11 @@ CREATE TABLE IF NOT EXISTS transcripter_workflow_templates (
 
 CREATE INDEX IF NOT EXISTS transcripter_workflow_templates_owner_idx
   ON transcripter_workflow_templates (owner_email, updated_at DESC);` },
-  { version: "0004", name: "0004_fix_active_system_models", sql: `-- Auto-upgrade system models to active live models on NVIDIA NIM API catalog
+  { version: "0004", name: "0004_fix_active_system_models", sql: `-- Auto-upgrade system models to fast, active live models on NVIDIA NIM API catalog
 UPDATE transcripter_system_settings
 SET value = jsonb_build_object(
-  'primaryModel', 'meta/llama-3.3-70b-instruct',
-  'fallbackModels', jsonb_build_array('nvidia/llama-3.1-nemotron-70b-instruct', 'meta/llama-3.1-8b-instruct')
+  'primaryModel', 'meta/llama-3.1-8b-instruct',
+  'fallbackModels', jsonb_build_array('meta/llama-3.2-3b-instruct', 'nvidia/llama-3.1-nemotron-70b-instruct', 'meta/llama-3.3-70b-instruct')
 ),
 updated_at = NOW(),
 updated_by = 'migration_0004'

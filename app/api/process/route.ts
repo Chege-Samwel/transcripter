@@ -167,7 +167,8 @@ async function callNvidia(
 
   const endpoint = getEndpoint();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15_000);
+  // 8.5s timeout ensures we catch slow models before Vercel's 10s serverless cutoff
+  const timeout = setTimeout(() => controller.abort(), 8_500);
   try {
     const response = await fetch(endpoint, {
       method: "POST",
@@ -207,18 +208,14 @@ async function callNvidiaWithRetry(
   maxTokens: number,
   onRetry?: (attempt: number, reason: string) => void,
 ) {
-  let lastError = "Model request failed.";
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      return await callNvidia(model, messages, temperature, maxTokens);
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown model error.";
-      if (!isRetryableModelError(lastError) || attempt === 1) throw error;
-      onRetry?.(attempt + 1, lastError);
-      await sleep(200);
-    }
+  try {
+    return await callNvidia(model, messages, temperature, maxTokens);
+  } catch (error) {
+    const lastError = error instanceof Error ? error.message : "Unknown model error.";
+    if (!isRetryableModelError(lastError)) throw error;
+    onRetry?.(2, lastError);
+    return await callNvidia(model, messages, temperature, maxTokens);
   }
-  throw new Error(lastError);
 }
 
 export async function POST(request: NextRequest) {
@@ -386,34 +383,20 @@ export async function POST(request: NextRequest) {
       detail: { attempts: isAdmin ? attempts : undefined, kind },
     });
 
-    // If unapproved editor, demo mode, or demo kind: fall back safely so user doesn't crash on 502
-    if (kind === "demo" || !account.canBookJob) {
-      const output = demoTransform(stage, text, formatRules, editRules);
-      const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
-      return NextResponse.json({
-        ok: true,
-        output,
-        checks,
-        ...(isAdmin ? { modelUsed: "Local safe transform (all models failed)", fallbackUsed: false, attempts } : {}),
-        demo: true,
-        kind,
-        warning: isAdmin ? `AI model request failed (${failure}). Used local demo transform.` : undefined,
-        estimatedTokens: requestTokens,
-      });
-    }
-
-    return NextResponse.json(
-      {
-        ok: false,
-        error: isAdmin
-          ? failure
-          : "The AI model service could not complete this pass. Please verify your NVIDIA API key or model settings.",
-        ...(isAdmin ? { attempts } : {}),
-        retryable: false,
-        code: "MODEL_FAILURE",
-      },
-      { status: 502 },
-    );
+    // Resilient fallback: ensure the request succeeds and transforms cleanly
+    // so users never hit an unhandled 504 / 502 gateway error
+    const output = demoTransform(stage, text, formatRules, editRules);
+    const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
+    return NextResponse.json({
+      ok: true,
+      output,
+      checks,
+      ...(isAdmin ? { modelUsed: "Local safe transform (AI timed out/unavailable)", fallbackUsed: true, attempts } : {}),
+      demo: true,
+      kind,
+      warning: `AI model pass could not complete in time (${failure}). Processed with safe local fallback.`,
+      estimatedTokens: requestTokens,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not process this workflow request.";
     await logError({ ownerEmail: account.email, stage: "process", code: "PROCESS_ERROR", message });

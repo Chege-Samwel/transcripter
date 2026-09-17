@@ -9,12 +9,13 @@ export type SystemModels = {
   updatedBy?: string;
 };
 
-// Actively supported models on NVIDIA NIM API catalog
+// Actively supported fast models on NVIDIA NIM API catalog (low-latency, under 3s response time)
 export const DEFAULT_SYSTEM_MODELS: SystemModels = {
-  primaryModel: "meta/llama-3.3-70b-instruct",
+  primaryModel: "meta/llama-3.1-8b-instruct",
   fallbackModels: [
+    "meta/llama-3.2-3b-instruct",
     "nvidia/llama-3.1-nemotron-70b-instruct",
-    "meta/llama-3.1-8b-instruct",
+    "meta/llama-3.3-70b-instruct",
   ],
 };
 

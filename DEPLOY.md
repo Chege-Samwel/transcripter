@@ -108,3 +108,15 @@ New registrations insert as `awaiting_approval`. They can sign in and run a **de
 - **Database not ready:** check `DATABASE_URL` and `/api/health`. Migrations retry on the next request.
 - **NVIDIA 401:** the key belongs in Vercel/Render env, not in the client.
 - **Demo only:** the account is still `awaiting_approval`. Approve it in **Approvals**.
+- **`/api/process` returns 502:** the model chain ran and every model refused. This is the
+  route's own response, not a Vercel error — the JSON body lists the reason per model in
+  `attempts[]` (bad key, unknown model id, rate limit). The console only shows the status
+  line, so read the response body or the logged `MODEL_FAILURE` event.
+- **`/api/process` returns 504 with `code: "TIMEOUT"`:** the fan-out ran out of the
+  function's time budget and stopped itself, so you get an explanation instead of Vercel's
+  bodyless gateway timeout. Lower the batch size in Settings, or raise `maxDuration` in
+  `app/api/process/route.ts` **and** the project's function max duration in Vercel — the
+  in-route budget is derived from that constant, so both have to move together. Hobby caps
+  out at 60s; Pro allows 300s.
+- **A bodyless 504 (no JSON at all):** the invocation was killed by the platform. That means
+  something ran past `maxDuration` without the route's own budget guard catching it.

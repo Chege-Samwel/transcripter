@@ -8,6 +8,7 @@
 // applied automatically by the app on first use (lib/migrate.ts), so this
 // command is optional — it is useful for inspecting or pre-provisioning a
 // fresh Neon database before deployment.
+import { readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Pool } from "pg";
@@ -127,14 +128,49 @@ function splitStatements(sql) {
 function sslConfig(connectionString) {
   try {
     const parsed = new URL(connectionString);
-    const sslmode = parsed.searchParams.get("sslmode");
+    const sslmode = parsed.searchParams.get("sslmode")?.toLowerCase();
     if (sslmode === "disable") return false;
-    if (sslmode === "require" || sslmode === "verify-ca" || sslmode === "verify-full") return { rejectUnauthorized: false };
+    // Keep parity with lib/database.ts: URL sslmode => system-CA verification
+    // (what pg-connection-string's "verify-full aliasing" does today), except
+    // an explicit `no-verify`; certificate files from the URL are still
+    // loaded; Neon hosts without sslmode still use TLS without verification
+    // (self-signed cluster certs).
+    if (sslmode) {
+      const ssl = { rejectUnauthorized: sslmode !== "no-verify" };
+      for (const [param, prop] of [["sslrootcert", "ca"], ["sslcert", "cert"], ["sslkey", "key"]]) {
+        const file = parsed.searchParams.get(param);
+        if (file) {
+          try {
+            ssl[prop] = readFileSync(file, "utf8");
+          } catch {
+            /* a missing file surfaces as a TLS handshake error */
+          }
+        }
+      }
+      return ssl;
+    }
     if (/(^|\.)neon\.(tech|aws)$/i.test(parsed.hostname)) return { rejectUnauthorized: false };
   } catch {
     /* fall through to no SSL */
   }
   return false;
+}
+
+// The TLS decision is made by sslConfig() via the explicit `ssl` option.
+// Leaving `sslmode` in the URL would let pg-connection-string override that
+// option (it replaces it with an empty object) and emit a deprecation
+// warning on every connection.
+function pgConnectionStringUrl(connectionString) {
+  try {
+    const url = new URL(connectionString);
+    if (url.searchParams.has("sslmode")) {
+      url.searchParams.delete("sslmode");
+      return url.toString();
+    }
+  } catch {
+    /* keep the original */
+  }
+  return connectionString;
 }
 
 const migrationsDir = path.join(process.cwd(), "db", "migrations");
@@ -144,7 +180,7 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const pool = new Pool({ connectionString: url, ssl: sslConfig(url), max: 1, connectionTimeoutMillis: 10_000 });
+const pool = new Pool({ connectionString: pgConnectionStringUrl(url), ssl: sslConfig(url), max: 1, connectionTimeoutMillis: 10_000 });
 pool.on("error", (error) => console.error("Idle pool error:", error.message));
 
 let appliedCount = 0;

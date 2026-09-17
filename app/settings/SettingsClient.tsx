@@ -12,6 +12,7 @@ import {
   type SectionCheck,
   type WorkflowConfig,
 } from "../../lib/workflow";
+import type { Account } from "../../lib/types";
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": true } as const;
@@ -30,7 +31,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 type Notice = { tone: "success" | "error" | "info"; message: string };
 type DatabaseInfo = { configured?: boolean; autoMigrations?: boolean; applied?: string[]; error?: string };
 
-export default function SettingsClient() {
+export default function SettingsClient({ account }: { account?: Account }) {
   const [config, setConfig] = useState<WorkflowConfig>({ ...DEFAULT_CONFIG, fallbackModels: [...DEFAULT_CONFIG.fallbackModels] });
   const [result, setResult] = useState("");
   const [crossChecks, setCrossChecks] = useState<SectionCheck[]>([]);
@@ -125,6 +126,7 @@ export default function SettingsClient() {
 
   return <main className="settings-page">
     <header className="page-header settings-header"><div><p className="overline">SETTINGS</p><h1>Shape the edit.</h1><p className="page-subtitle">Set the editorial direction once. Every new source will inherit these rules and the same quality bar.</p></div><div className="header-actions"><Link className="text-link" href="/workspace">Back to workspace <Icon name="arrow" size={15} /></Link><button className="primary-button" onClick={save} disabled={saving}>{saving ? <><span className="spinner" />Saving</> : <><Icon name="check" size={15} />Save changes</>}</button></div></header>
+    {account && account.status !== "approved" && <div className="workspace-notice info"><Icon name="lock" size={16} /><span>Account status is {account.status.replace("_", " ")}. Guiding rules still apply to demos. Booking a full job waits on the approved enum.</span></div>}
     {notice && <div className={`workspace-notice ${notice.tone}`}><Icon name={notice.tone === "error" ? "x" : "check"} size={16} /><span>{notice.message}</span><button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" size={15} /></button></div>}
 
     <div className="settings-layout">

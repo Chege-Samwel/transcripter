@@ -1,9 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const protectedPaths = ["/workspace", "/settings"];
+const protectedPaths = ["/workspace", "/settings", "/history", "/admin"];
 
 function isProtectedPath(pathname: string) {
-  return protectedPaths.some((path) => pathname === path || pathname.startsWith(`${path}/`)) || pathname.startsWith("/api/process") || pathname.startsWith("/api/workflow");
+  return (
+    protectedPaths.some((path) => pathname === path || pathname.startsWith(`${path}/`)) ||
+    pathname.startsWith("/api/process") ||
+    pathname.startsWith("/api/workflow") ||
+    pathname.startsWith("/api/jobs") ||
+    pathname.startsWith("/api/account") ||
+    pathname.startsWith("/api/admin") ||
+    pathname.startsWith("/api/errors")
+  );
 }
 
 export function middleware(request: NextRequest) {
@@ -17,7 +25,9 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(login);
   }
 
-  if (pathname === "/login" && hasSessionCookie) return NextResponse.redirect(new URL("/workspace", request.url));
+  if ((pathname === "/login" || pathname === "/register") && hasSessionCookie) {
+    return NextResponse.redirect(new URL("/workspace", request.url));
+  }
   return NextResponse.next();
 }
 

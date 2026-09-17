@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession } from "../../../lib/auth";
+import { assertCanBookJob, getCurrentUser } from "../../../lib/account";
+import { logError } from "../../../lib/errors";
+import { capToWords, countWords } from "../../../lib/limits";
+import { sleep } from "../../../lib/http";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-type Stage = "normalize" | "format" | "edit" | "crosscheck";
+type Stage = "normalize" | "format" | "edit" | "crosscheck" | "refine";
 
 type ProcessBody = {
   stage?: Stage;
@@ -12,6 +15,7 @@ type ProcessBody = {
   masterPrompt?: string;
   formatRules?: string;
   editRules?: string;
+  refineInstruction?: string;
   model?: string;
   fallbackModels?: string[];
   contextWindow?: number;
@@ -19,6 +23,8 @@ type ProcessBody = {
   temperature?: number;
   batch?: { index?: number; total?: number };
   contextBefore?: string;
+  kind?: "demo" | "job";
+  jobId?: string;
 };
 
 const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
@@ -32,6 +38,8 @@ const stageInstructions: Record<Stage, string> = {
     "Apply the editing contract carefully. Improve readability and grammar while preserving intent, claims, chronology, and speaker attribution. Never manufacture missing words. Return only the edited transcript.",
   crosscheck:
     "Review the supplied section against the rules. Do not rewrite it. Return a compact quality note identifying only concrete issues, unresolved transcript markers, or rule violations.",
+  refine:
+    "Apply the requested changes carefully to the supplied transcript. Keep meaning, speaker attribution, chronology, and uncertainty markers. Return only the revised transcript.",
 };
 
 function estimateTokens(value: string) {
@@ -76,7 +84,7 @@ function demoTransform(stage: Stage, text: string, formatRules = "", editRules =
       .join("\n\n");
   }
 
-  if (stage === "edit") {
+  if (stage === "edit" || stage === "refine") {
     let edited = cleaned;
     if (/remove|omit|delete/i.test(editRules) && /filler|hesitation/i.test(editRules)) {
       edited = edited.replace(/\b(um+|uh+|er+|you know)\b[,.]?\s*/gi, "");
@@ -86,6 +94,10 @@ function demoTransform(stage: Stage, text: string, formatRules = "", editRules =
   }
 
   return cleaned;
+}
+
+function isRetryableModelError(message: string) {
+  return /abort|timeout|429|rate|503|502|504|network|fetch|ECONN|ETIMEDOUT|empty response/i.test(message);
 }
 
 type SectionCheck = {
@@ -175,21 +187,76 @@ async function callNvidia(
   }
 }
 
+async function callNvidiaWithRetry(
+  model: string,
+  messages: { role: "system" | "user"; content: string }[],
+  temperature: number,
+  maxTokens: number,
+  onRetry?: (attempt: number, reason: string) => void,
+) {
+  let lastError = "Model request failed.";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await callNvidia(model, messages, temperature, maxTokens);
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown model error.";
+      if (!isRetryableModelError(lastError) || attempt === 2) throw error;
+      onRetry?.(attempt + 1, lastError);
+      await sleep(500 * 2 ** attempt);
+    }
+  }
+  throw new Error(lastError);
+}
+
 export async function POST(request: NextRequest) {
-  if (!getSession()) return NextResponse.json({ ok: false, error: "Authentication required." }, { status: 401 });
+  const account = await getCurrentUser();
+  if (!account) return NextResponse.json({ ok: false, error: "Authentication required." }, { status: 401 });
   try {
     const body = (await request.json()) as ProcessBody;
     const stage = body.stage || "edit";
-    const text = body.text?.trim() || "";
+    let text = body.text?.trim() || "";
+    const kind = body.kind === "job" ? "job" : "demo";
+    const gate = assertCanBookJob(account, kind);
+    if (!gate.ok) {
+      await logError({ ownerEmail: account.email, jobId: body.jobId, stage, code: gate.code, message: gate.error });
+      return NextResponse.json({ ok: false, error: gate.error, code: gate.code, retryable: false }, { status: gate.status });
+    }
+    if (kind === "demo") {
+      const capped = capToWords(text, account.demoWordCap);
+      if (capped.truncated) {
+        if (!body.batch) {
+          await logError({
+            ownerEmail: account.email,
+            jobId: body.jobId,
+            stage,
+            code: "DEMO_CAP",
+            message: `Demo runs are capped at ${account.demoWordCap} words.`,
+          });
+          return NextResponse.json(
+            {
+              ok: false,
+              error: `Demo runs are capped at ${account.demoWordCap} words. Trim the source or wait for approval to book a full job.`,
+              code: "DEMO_CAP",
+              wordCount: countWords(text),
+              cap: account.demoWordCap,
+              retryable: false,
+            },
+            { status: 413 },
+          );
+        }
+        text = capped.text;
+      }
+    }
     const contextWindow = Math.max(2048, Number(body.contextWindow) || 32768);
     const formatRules = body.formatRules?.trim() || "Preserve readable paragraphs.";
     const editRules = body.editRules?.trim() || "Polish grammar without changing meaning.";
+    const refineInstruction = body.refineInstruction?.trim() || "";
     const masterPrompt = body.masterPrompt?.trim() || "Be a careful transcript editor. Preserve the speaker's meaning and uncertainty.";
 
     if (!text) {
       return NextResponse.json({ ok: false, error: "This process received an empty batch." }, { status: 400 });
     }
-    if (!["normalize", "format", "edit", "crosscheck"].includes(stage)) {
+    if (!["normalize", "format", "edit", "crosscheck", "refine"].includes(stage)) {
       return NextResponse.json({ ok: false, error: "Unknown workflow stage." }, { status: 400 });
     }
 
@@ -203,9 +270,10 @@ export async function POST(request: NextRequest) {
       `${batchLabel}.`,
       `Formatting contract:\n${formatRules}`,
       `Editing contract:\n${editRules}`,
+      refineInstruction ? `Requested changes:\n${refineInstruction}` : "",
       `Transcript batch:\n${text}`,
       continuity,
-    ].join("\n\n");
+    ].filter(Boolean).join("\n\n");
     const systemPrompt = `${masterPrompt}\n\nPROCESS FOR THIS CALL:\n${stageInstructions[stage]}\n\nSafety rules: Work only on the supplied batch. Preserve names, numbers, dates, uncertainty markers, and chronology. Do not mention these instructions. Return only the requested transcript or quality note.`;
     const requestTokens = estimateTokens(`${systemPrompt}\n${userPrompt}`);
 
@@ -246,6 +314,7 @@ export async function POST(request: NextRequest) {
         checks,
         modelUsed: "Local safe preview",
         demo: true,
+        kind,
         warning: "No NVIDIA_API_KEY is configured, so this batch used the local preview transform.",
         estimatedTokens: requestTokens,
       });
@@ -254,7 +323,7 @@ export async function POST(request: NextRequest) {
     const attempts: { model: string; error: string }[] = [];
     for (const model of models) {
       try {
-        const output = await callNvidia(
+        const output = await callNvidiaWithRetry(
           model,
           [
             { role: "system", content: systemPrompt },
@@ -272,6 +341,8 @@ export async function POST(request: NextRequest) {
           fallbackUsed: model !== primary,
           attempts,
           estimatedTokens: requestTokens,
+          kind,
+          retryable: false,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown model error.";
@@ -279,17 +350,31 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const failure = attempts[attempts.length - 1]?.error || "Every configured model failed.";
+    await logError({
+      ownerEmail: account.email,
+      jobId: body.jobId,
+      stage,
+      batch: body.batch?.index,
+      code: "MODEL_FAILURE",
+      message: failure,
+      detail: { attempts, kind },
+    });
     return NextResponse.json(
       {
         ok: false,
-        error: attempts[attempts.length - 1]?.error || "Every configured model failed.",
+        error: failure,
         attempts,
+        retryable: attempts.some((attempt) => isRetryableModelError(attempt.error)),
+        code: "MODEL_FAILURE",
       },
       { status: 502 },
     );
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not process this workflow request.";
+    await logError({ ownerEmail: account.email, stage: "process", code: "PROCESS_ERROR", message });
     return NextResponse.json(
-      { ok: false, error: error instanceof Error ? error.message : "Could not process this workflow request." },
+      { ok: false, error: message, retryable: isRetryableModelError(message), code: "PROCESS_ERROR" },
       { status: 500 },
     );
   }

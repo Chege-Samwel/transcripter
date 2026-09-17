@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
-import { getSession } from "../../../../lib/auth";
+import { getCurrentUser } from "../../../../lib/account";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const session = getSession();
-  return NextResponse.json({ authenticated: Boolean(session), email: session?.email || null });
+  const account = await getCurrentUser();
+  return NextResponse.json({ authenticated: Boolean(account), email: account?.email || null, account });
 }

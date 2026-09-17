@@ -1,14 +1,14 @@
 import { redirect } from "next/navigation";
 import AppShell from "../../components/AppShell";
 import { getCurrentUser } from "../../lib/account";
-import WorkspaceClient from "./WorkspaceClient";
+import HistoryClient from "./HistoryClient";
 
-export default async function WorkspacePage() {
+export default async function HistoryPage() {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   return (
     <AppShell user={user}>
-      <WorkspaceClient account={user} />
+      <HistoryClient account={user} />
     </AppShell>
   );
 }

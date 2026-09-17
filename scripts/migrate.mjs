@@ -29,9 +29,30 @@ function splitStatements(sql) {
   let inDouble = false;
   let inLineComment = false;
   let inBlockComment = false;
+  let dollarQuote = null;
+
+  const startsDollarQuote = (index) => {
+    if (sql[index] !== "$") return null;
+    let end = index + 1;
+    while (end < sql.length && /[A-Za-z0-9_]/.test(sql[end])) end += 1;
+    if (sql[end] === "$") return sql.slice(index, end + 1);
+    return null;
+  };
+
   for (let i = 0; i < sql.length; i += 1) {
     const ch = sql[i];
     const next = sql[i + 1];
+    if (dollarQuote) {
+      const tag = startsDollarQuote(i);
+      if (tag === dollarQuote) {
+        current += tag;
+        i += tag.length - 1;
+        dollarQuote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
     if (inLineComment) {
       current += ch;
       if (ch === "\n") inLineComment = false;
@@ -61,6 +82,13 @@ function splitStatements(sql) {
     if (inDouble) {
       current += ch;
       if (ch === '"') inDouble = false;
+      continue;
+    }
+    const tag = startsDollarQuote(i);
+    if (tag) {
+      dollarQuote = tag;
+      current += tag;
+      i += tag.length - 1;
       continue;
     }
     if (ch === "-" && next === "-") {

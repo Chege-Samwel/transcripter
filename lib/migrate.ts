@@ -79,7 +79,8 @@ async function applyMigrations(): Promise<DatabaseReadiness> {
 /**
  * Splits a SQL script into single statements (the database driver executes
  * one statement per call). Mirrors splitStatements in scripts/migrate.mjs —
- * keep the two implementations in sync.
+ * keep the two implementations in sync. Understands dollar-quoted bodies
+ * (DO $$ ... $$) so enum migrations are not split on inner semicolons.
  */
 export function splitStatements(sql: string): string[] {
   const statements: string[] = [];
@@ -88,9 +89,30 @@ export function splitStatements(sql: string): string[] {
   let inDouble = false;
   let inLineComment = false;
   let inBlockComment = false;
+  let dollarQuote: string | null = null;
+
+  const startsDollarQuote = (index: number): string | null => {
+    if (sql[index] !== "$") return null;
+    let end = index + 1;
+    while (end < sql.length && /[A-Za-z0-9_]/.test(sql[end])) end += 1;
+    if (sql[end] === "$") return sql.slice(index, end + 1);
+    return null;
+  };
+
   for (let i = 0; i < sql.length; i += 1) {
     const ch = sql[i];
     const next = sql[i + 1];
+    if (dollarQuote) {
+      const tag = startsDollarQuote(i);
+      if (tag === dollarQuote) {
+        current += tag;
+        i += tag.length - 1;
+        dollarQuote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
     if (inLineComment) {
       current += ch;
       if (ch === "\n") inLineComment = false;
@@ -120,6 +142,13 @@ export function splitStatements(sql: string): string[] {
     if (inDouble) {
       current += ch;
       if (ch === '"') inDouble = false;
+      continue;
+    }
+    const tag = startsDollarQuote(i);
+    if (tag) {
+      dollarQuote = tag;
+      current += tag;
+      i += tag.length - 1;
       continue;
     }
     if (ch === "-" && next === "-") {

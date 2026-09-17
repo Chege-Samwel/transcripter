@@ -4,6 +4,15 @@ import JSZip from "jszip";
 import { jsPDF } from "jspdf";
 import Link from "next/link";
 import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import CopyButton from "../../components/CopyButton";
+import EditsCanvas from "../../components/EditsCanvas";
+import GuidingRules from "../../components/GuidingRules";
+import Icon from "../../components/Icon";
+import ProceedingOverlay, { type OverlayLog, type OverlayStep } from "../../components/ProceedingOverlay";
+import { requestJson } from "../../lib/http";
+import { capToWords, countWords } from "../../lib/limits";
+import { clearDraft, readDraft, readLocalJob, upsertLocalJob, writeDraft } from "../../lib/local-jobs";
+import { createJobRecord, emptyStages, jobTitleFromSource, parseJobRecord, type Account, type ErrorEvent, type JobKind, type JobRecord, type ResumeCursor } from "../../lib/types";
 import {
   chunkTranscript,
   DEFAULT_CONFIG,
@@ -15,36 +24,10 @@ import {
   sectionChecks,
   shortModel,
   slugify,
-  type Progress,
-  type SectionCheck,
-  type TraceEvent,
   type WorkflowConfig,
 } from "../../lib/workflow";
 
-type RunState = "idle" | "running" | "complete";
 type Notice = { tone: "success" | "error" | "info"; message: string };
-
-function Icon({ name, size = 18 }: { name: string; size?: number }) {
-  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": true } as const;
-  const stroke = { stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
-  if (name === "upload") return <svg {...common}><path {...stroke} d="M12 16V4M8 8l4-4 4 4M5 14v5h14v-5" /></svg>;
-  if (name === "file") return <svg {...common}><path {...stroke} d="M6 3.5h8l4 4v13H6v-17Z" /><path {...stroke} d="M14 3.5v4h4M9 12h6M9 15.5h6" /></svg>;
-  if (name === "play") return <svg {...common}><path d="M8.5 5.5v13l10-6.5-10-6.5Z" fill="currentColor" /></svg>;
-  if (name === "arrow") return <svg {...common}><path {...stroke} d="M5 12h13M13 6l6 6-6 6" /></svg>;
-  if (name === "check") return <svg {...common}><path {...stroke} d="m5 12 4 4L19 6" /></svg>;
-  if (name === "alert") return <svg {...common}><path {...stroke} d="M12 4 21 20H3L12 4Z" /><path {...stroke} d="M12 9v5M12 17.5h.01" /></svg>;
-  if (name === "copy") return <svg {...common}><rect {...stroke} x="8" y="8" width="11" height="12" rx="1.5" /><path {...stroke} d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v10A1.5 1.5 0 0 0 5.5 17H8" /></svg>;
-  if (name === "download") return <svg {...common}><path {...stroke} d="M12 4v12M8 12l4 4 4-4M5 20h14" /></svg>;
-  if (name === "refresh") return <svg {...common}><path {...stroke} d="M20 11a8 8 0 0 0-14.5-4.7L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.7L20 16m0 4v-4h-4" /></svg>;
-  if (name === "external") return <svg {...common}><path {...stroke} d="M14 5h5v5M19 5l-8 8M19 13v5.5a.5.5 0 0 1-.5.5h-13a.5.5 0 0 1-.5-.5v-13a.5.5 0 0 1 .5-.5H11" /></svg>;
-  if (name === "chevron") return <svg {...common}><path {...stroke} d="m9 6 6 6-6 6" /></svg>;
-  if (name === "x") return <svg {...common}><path {...stroke} d="m6 6 12 12M18 6 6 18" /></svg>;
-  if (name === "spark") return <svg {...common}><path {...stroke} d="m12 2 1.7 6.3L20 10l-6.3 1.7L12 18l-1.7-6.3L4 10l6.3-1.7L12 2Z" /></svg>;
-  if (name === "activity") return <svg {...common}><path {...stroke} d="M3 12h4l2.1-6 4.2 12 2.1-6H21" /></svg>;
-  if (name === "layers") return <svg {...common}><path {...stroke} d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z" /><path {...stroke} d="m4 12 8 4.5 8-4.5M4 16.5l8 4.5 8-4.5" /></svg>;
-  if (name === "edit") return <svg {...common}><path {...stroke} d="m4 16.5-.8 3.8 3.8-.8L18.7 7.8a2.7 2.7 0 0 0-3.8-3.8L4 16.5Z" /><path {...stroke} d="m13.5 5.5 5 5" /></svg>;
-  return <svg {...common}><circle {...stroke} cx="12" cy="12" r="8" /></svg>;
-}
 
 function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
@@ -57,107 +40,146 @@ function downloadBlob(blob: Blob, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function timeLabel(timestamp: string) {
-  return new Date(timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+function assemble(batches: JobRecord["batches"], key: "normalize" | "format" | "edit") {
+  return batches.map((batch) => batch[key]).filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-export default function WorkspaceClient() {
+export default function WorkspaceClient({ account, jobId }: { account: Account; jobId?: string }) {
   const [config, setConfig] = useState<WorkflowConfig>({ ...DEFAULT_CONFIG, fallbackModels: [...DEFAULT_CONFIG.fallbackModels] });
-  const [result, setResult] = useState("");
-  const [crossChecks, setCrossChecks] = useState<SectionCheck[]>([]);
-  const [trace, setTrace] = useState<TraceEvent[]>([]);
-  const [progress, setProgress] = useState<Progress>({ stage: "idle", stageIndex: -1, batch: 0, total: 0 });
-  const [runState, setRunState] = useState<RunState>("idle");
-  const [checking, setChecking] = useState(false);
+  const [kind, setKind] = useState<JobKind>(account.canBookJob ? "job" : "demo");
+  const [job, setJob] = useState<JobRecord | null>(null);
   const [hydrated, setHydrated] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [refineInstruction, setRefineInstruction] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [error, setError] = useState("");
-  const serverSaveOkRef = useRef(false);
+  const [checking, setChecking] = useState(false);
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [overlayTitle, setOverlayTitle] = useState("Working through your source");
+  const [overlaySubtitle, setOverlaySubtitle] = useState("Each pass is isolated, traced, and handed forward only after it completes.");
+  const [overlayPercent, setOverlayPercent] = useState(0);
+  const [overlaySteps, setOverlaySteps] = useState<OverlayStep[]>([]);
+  const [overlayLog, setOverlayLog] = useState<OverlayLog[]>([]);
+  const [overlayError, setOverlayError] = useState<{ message: string; retryable?: boolean } | null>(null);
+  const [overlayBusy, setOverlayBusy] = useState(false);
+  const [summaryLeft, setSummaryLeft] = useState("");
+  const [summaryRight, setSummaryRight] = useState("");
   const transcriptInputRef = useRef<HTMLInputElement>(null);
+  const pauseRef = useRef(false);
+  const jobRef = useRef<JobRecord | null>(null);
+  const persistTimer = useRef<number | null>(null);
 
+  const words = countWords(config.transcript);
+  const cap = account.demoWordCap;
+  const overCap = kind === "demo" && words > cap;
   const batches = useMemo(() => chunkTranscript(config.transcript, config.batchTokens), [config.transcript, config.batchTokens]);
-  const inputTokens = useMemo(() => estimateTokens(config.transcript), [config.transcript]);
-  const outputTokens = useMemo(() => estimateTokens(result), [result]);
-  const passedChecks = crossChecks.filter((check) => check.status === "pass").length;
-  const flaggedChecks = crossChecks.filter((check) => check.status === "review").length;
+  const showCanvas = Boolean(job && (job.result || job.stages.edit || job.stages.normalize || job.status === "complete" || job.status === "failed" || job.status === "paused"));
+
+  const pushLog = useCallback((text: string, tone: OverlayLog["tone"] = "info", meta?: string) => {
+    setOverlayLog((current) => [...current, { id: makeId(), text, tone, meta }]);
+  }, []);
+
+  const persist = useCallback(async (next: JobRecord) => {
+    jobRef.current = next;
+    setJob(next);
+    upsertLocalJob(next);
+    if (account.persistence !== "database") return;
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => {
+      void requestJson(`/api/jobs/${next.id}`, { method: "PATCH", body: JSON.stringify(next) }, { retries: 1 });
+    }, 400);
+  }, [account.persistence]);
+
+  const createAndPersist = useCallback(async (draft: JobRecord) => {
+    upsertLocalJob(draft);
+    if (account.persistence === "database") {
+      const { data } = await requestJson<{ job?: JobRecord }>(
+        "/api/jobs",
+        { method: "POST", body: JSON.stringify(draft) },
+        { retries: 1 },
+      );
+      const saved = data.job ? parseJobRecord(data.job) : draft;
+      if (saved) {
+        jobRef.current = saved;
+        setJob(saved);
+        upsertLocalJob(saved);
+        return saved;
+      }
+    }
+    jobRef.current = draft;
+    setJob(draft);
+    return draft;
+  }, [account.persistence]);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      let localPayload: { config?: unknown; result?: string; crossChecks?: SectionCheck[] } | null = null;
+      let defaults = normalizeConfig(DEFAULT_CONFIG);
       try {
-        const local = localStorage.getItem("transcripter-workflow-v2");
-        if (local) localPayload = JSON.parse(local);
-      } catch { /* use server state */ }
-      try {
-        const response = await fetch("/api/workflow", { cache: "no-store" });
-        const data = (await response.json()) as {
-          workflow?: { config?: unknown; result?: string; crossChecks?: SectionCheck[] } | null;
-          database?: { configured?: boolean; error?: string };
-        };
-        const payload = data.workflow || localPayload;
-        if (!cancelled && payload) {
-          setConfig(normalizeConfig(payload.config));
-          setResult(typeof payload.result === "string" ? payload.result : "");
-          setCrossChecks(Array.isArray(payload.crossChecks) ? payload.crossChecks : []);
+        const { data } = await requestJson<{ workflow?: { config?: unknown } | null }>("/api/workflow");
+        if (data.workflow?.config) defaults = normalizeConfig(data.workflow.config);
+      } catch { /* defaults */ }
+
+      if (jobId) {
+        let loaded: JobRecord | null = null;
+        try {
+          const { data } = await requestJson<{ job?: JobRecord | null }>(`/api/jobs/${jobId}`);
+          loaded = data.job ? parseJobRecord(data.job) : null;
+        } catch { /* local */ }
+        if (!loaded) loaded = readLocalJob(jobId);
+        if (!cancelled && loaded) {
+          jobRef.current = loaded;
+          setJob(loaded);
+          setKind(loaded.kind);
+          setConfig(normalizeConfig({ ...defaults, ...loaded.config, transcript: loaded.source, sourceFileName: loaded.sourceFileName }));
+          if (loaded.status === "failed" || loaded.status === "paused" || loaded.status === "running") {
+            setOverlayOpen(true);
+            setOverlayTitle(loaded.status === "failed" ? "This edit can continue" : "Ready to continue");
+            setOverlaySubtitle("The last successful pass is saved. Retry the failed step or continue later.");
+            setOverlayError(loaded.errorLog[loaded.errorLog.length - 1] ? { message: loaded.errorLog[loaded.errorLog.length - 1].message, retryable: true } : { message: "This run stopped before it finished.", retryable: true });
+            setOverlayPercent(loaded.resumeCursor ? Math.round(((loaded.resumeCursor.batchIndex) / Math.max(1, loaded.batches.length || 1)) * 100) : 8);
+            setOverlayLog((loaded.errorLog || []).map((event) => ({ id: event.id, text: event.message, tone: "error" as const, meta: event.stage })));
+          }
+        } else if (!cancelled) {
+          setNotice({ tone: "error", message: "That transcript was not found. Start a new one from the workspace." });
         }
-        if (!cancelled && data.database && !data.database.configured) {
-          setNotice({ tone: "info", message: "Server saving is off — set DATABASE_URL to store this workflow in your Neon database. Until then, changes stay in this browser." });
-        } else if (!cancelled && data.database?.error) {
-          setNotice({ tone: "error", message: `Database: ${data.database.error}` });
-        }
-      } catch {
-        if (!cancelled && localPayload) {
-          setConfig(normalizeConfig(localPayload.config));
-          setResult(typeof localPayload.result === "string" ? localPayload.result : "");
-          setCrossChecks(Array.isArray(localPayload.crossChecks) ? localPayload.crossChecks : []);
-        }
-      } finally {
-        if (!cancelled) setHydrated(true);
+      } else {
+        const draft = readDraft();
+        setConfig(normalizeConfig({
+          ...defaults,
+          transcript: draft?.source || "",
+          sourceFileName: draft?.sourceFileName || "",
+          formatRules: draft?.formatRules || defaults.formatRules,
+          editRules: draft?.editRules || defaults.editRules,
+          masterPrompt: draft?.masterPrompt || defaults.masterPrompt,
+        }));
+        setKind(account.canBookJob ? (draft?.kind === "demo" ? "demo" : "job") : "demo");
       }
+      if (!cancelled) setHydrated(true);
     }
     void load();
     return () => { cancelled = true; };
-  }, []);
+  }, [account.canBookJob, jobId]);
 
   useEffect(() => {
-    if (!hydrated) return;
-    const payload = { config, result, crossChecks };
-    try { localStorage.setItem("transcripter-workflow-v2", JSON.stringify(payload)); } catch { /* server persistence remains available */ }
-    const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const response = await fetch("/api/workflow", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-          const data = (await response.json()) as { persisted?: boolean; configured?: boolean; error?: string };
-          if (data.persisted) {
-            serverSaveOkRef.current = true;
-          } else if (data.configured && data.error && serverSaveOkRef.current) {
-            // Only alert when saving used to work — a never-configured
-            // database is already explained by the load-time notice.
-            setNotice({ tone: "error", message: `Server save failed: ${data.error}` });
-          }
-        } catch { /* the draft stays in the browser when the server is unreachable */ }
-      })();
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [config, result, crossChecks, hydrated]);
+    if (!hydrated || jobId) return;
+    writeDraft({
+      source: config.transcript,
+      sourceFileName: config.sourceFileName,
+      kind,
+      formatRules: config.formatRules,
+      editRules: config.editRules,
+      masterPrompt: config.masterPrompt,
+    });
+  }, [config.editRules, config.formatRules, config.masterPrompt, config.sourceFileName, config.transcript, hydrated, jobId, kind]);
 
   useEffect(() => {
     if (!notice) return;
-    const timer = window.setTimeout(() => setNotice(null), 4800);
+    const timer = window.setTimeout(() => setNotice(null), 5000);
     return () => window.clearTimeout(timer);
   }, [notice]);
 
   const updateConfig = useCallback(<K extends keyof WorkflowConfig>(key: K, value: WorkflowConfig[K]) => {
     setConfig((current) => ({ ...current, [key]: value }));
-  }, []);
-
-  const addTrace = useCallback((event: Omit<TraceEvent, "id" | "timestamp">) => {
-    setTrace((current) => [{ ...event, id: makeId(), timestamp: new Date().toISOString() }, ...current]);
-  }, []);
-
-  const updateTrace = useCallback((id: string, patch: Partial<TraceEvent>) => {
-    setTrace((current) => current.map((event) => event.id === id ? { ...event, ...patch } : event));
   }, []);
 
   const readFile = useCallback(async (file: File) => {
@@ -176,114 +198,345 @@ export default function WorkspaceClient() {
       const loaded = await readFile(file);
       updateConfig("transcript", loaded.text);
       updateConfig("sourceFileName", loaded.name);
-      setResult("");
-      setCrossChecks([]);
-      setRunState("idle");
-      setError("");
       setNotice({ tone: "success", message: `${loaded.name} is loaded.` });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "This file could not be opened.");
+      setOverlayOpen(true);
+      setOverlayBusy(false);
+      setOverlayTitle("This file could not be opened");
+      setOverlayError({ message: caught instanceof Error ? caught.message : "This file could not be opened.", retryable: false });
     }
   }, [readFile, updateConfig]);
 
-  const onFileInput = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    void handleFile(event.target.files?.[0]);
-    event.target.value = "";
-  }, [handleFile]);
-
-  const onDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    void handleFile(event.dataTransfer.files?.[0]);
-  }, [handleFile]);
-
-  const runWorkflow = useCallback(async () => {
-    if (runState === "running") return;
+  const runWorkflow = useCallback(async (mode: "fresh" | "resume" | "retry" = "fresh") => {
+    if (overlayBusy && mode === "fresh") return;
     if (!config.transcript.trim()) {
-      setError("Add a transcript before starting the edit.");
+      setOverlayOpen(true);
+      setOverlayBusy(false);
+      setOverlayTitle("Add a transcript first");
+      setOverlayError({ message: "Paste or upload a source before starting the edit.", retryable: false });
       return;
     }
-    const safeBatches = chunkTranscript(config.transcript, config.batchTokens);
+    if (kind === "job" && !account.canBookJob) {
+      setOverlayOpen(true);
+      setOverlayBusy(false);
+      setOverlayTitle("This account cannot book a job");
+      setOverlaySubtitle(`Registrations stay on a ${cap}-word demo until an admin sets your status to approved.`);
+      setOverlayError({ message: "Run a demo instead, or wait for approval.", retryable: false });
+      setKind("demo");
+      return;
+    }
+
+    let source = config.transcript;
+    if (kind === "demo") {
+      const capped = capToWords(source, cap);
+      if (capped.truncated) {
+        source = capped.text;
+        updateConfig("transcript", source);
+      }
+    }
+
+    const safeBatches = chunkTranscript(source, config.batchTokens);
     if (!safeBatches.length) return;
-    setError("");
-    setNotice(null);
-    setTrace([]);
-    setResult("");
-    setCrossChecks([]);
-    setRunState("running");
-    setProgress({ stage: "normalize", stageIndex: 0, batch: 0, total: safeBatches.length });
-    addTrace({ stage: "planner", label: "Source planned", status: "success", total: safeBatches.length, message: `${formatNumber(safeBatches.length)} batch${safeBatches.length === 1 ? "" : "es"} · ${formatNumber(estimateTokens(config.transcript))} input tokens` });
-    const outputs: string[] = [];
-    let continuity = "";
+
+    pauseRef.current = false;
+    setOverlayOpen(true);
+    setOverlayBusy(true);
+    setOverlayError(null);
+    setOverlayTitle("Working through your source");
+    setOverlaySubtitle("Live updates replace alerts. If a pass fails, you can retry it without losing earlier batches.");
+    setOverlayLog([]);
+    setOverlaySteps(PIPELINE.map((stage) => ({ key: stage.key, label: stage.label, description: stage.description, status: "waiting" as const })));
+
+    let currentJob = jobRef.current;
+    if (mode === "fresh" || !currentJob) {
+      const created = createJobRecord({
+        ownerEmail: account.email,
+        kind,
+        config: { ...config, transcript: source },
+        source,
+        sourceFileName: config.sourceFileName,
+        title: jobTitleFromSource(source, config.sourceFileName),
+        id: currentJob?.id,
+      });
+      created.status = "running";
+      created.batches = safeBatches.map((text, index) => ({ index, source: text, normalize: "", format: "", edit: "" }));
+      created.stages = emptyStages();
+      created.result = "";
+      created.errorLog = [];
+      created.resumeCursor = { batchIndex: 0, stageIndex: 0, continuity: "" };
+      currentJob = await createAndPersist(created);
+      clearDraft();
+      if (!jobId && typeof window !== "undefined") {
+        window.history.replaceState(null, "", `/workspace/${currentJob.id}`);
+      }
+    } else {
+      currentJob = { ...currentJob, status: "running", kind, source, config: { ...config, transcript: source } };
+      await persist(currentJob);
+    }
+
+    const workBatches = currentJob.batches.length ? currentJob.batches : safeBatches.map((text, index) => ({ index, source: text, normalize: "", format: "", edit: "" }));
+    const cursor: ResumeCursor = mode === "fresh" || !currentJob.resumeCursor
+      ? { batchIndex: 0, stageIndex: 0, continuity: "" }
+      : currentJob.resumeCursor;
+    const startBatch = Math.min(cursor.batchIndex, Math.max(0, workBatches.length - 1));
+    const startStage = mode === "retry" ? cursor.stageIndex : Math.min(cursor.stageIndex, PIPELINE.length - 1);
+    pushLog(mode === "fresh" ? "Source planned" : "Continuing from the last saved pass", "success", `${workBatches.length} batch${workBatches.length === 1 ? "" : "es"}`);
+
+    let continuity = cursor.continuity || "";
     const startedAt = Date.now();
 
     try {
-      for (let batchIndex = 0; batchIndex < safeBatches.length; batchIndex += 1) {
-        let currentText = safeBatches[batchIndex];
-        for (let stageIndex = 0; stageIndex < PIPELINE.length; stageIndex += 1) {
+      for (let batchIndex = startBatch; batchIndex < workBatches.length; batchIndex += 1) {
+        if (pauseRef.current) throw Object.assign(new Error("PAUSED"), { code: "PAUSED" });
+        const stageStart = batchIndex === startBatch ? startStage : 0;
+        let currentText = workBatches[batchIndex].source;
+        if (stageStart === 1 && workBatches[batchIndex].normalize) currentText = workBatches[batchIndex].normalize;
+        if (stageStart === 2 && workBatches[batchIndex].format) currentText = workBatches[batchIndex].format;
+
+        for (let stageIndex = stageStart; stageIndex < PIPELINE.length; stageIndex += 1) {
+          if (pauseRef.current) throw Object.assign(new Error("PAUSED"), { code: "PAUSED" });
           const stage = PIPELINE[stageIndex];
-          setProgress({ stage: stage.key, stageIndex, batch: batchIndex, total: safeBatches.length });
-          const traceId = makeId();
-          const stageStarted = Date.now();
-          setTrace((current) => [{ id: traceId, stage: stage.key, label: stage.label, status: "running", batch: batchIndex + 1, total: safeBatches.length, timestamp: new Date().toISOString(), message: "Processing one editorial pass" }, ...current]);
-          try {
-            const response = await fetch("/api/process", {
+          setOverlaySteps(PIPELINE.map((item, index) => ({
+            key: item.key,
+            label: item.label,
+            description: item.description,
+            status: index < stageIndex ? "done" : index === stageIndex ? "active" : "waiting",
+          })));
+          const percent = Math.max(4, Math.round(((batchIndex * PIPELINE.length + stageIndex) / (workBatches.length * PIPELINE.length)) * 100));
+          setOverlayPercent(percent);
+          setSummaryLeft(`Batch ${batchIndex + 1} of ${workBatches.length}`);
+          setSummaryRight(stage.label);
+          pushLog(`${stage.label} · batch ${batchIndex + 1}`, "running");
+
+          const { ok, data } = await requestJson<{
+            ok?: boolean;
+            output?: string;
+            error?: string;
+            modelUsed?: string;
+            demo?: boolean;
+            warning?: string;
+            retryable?: boolean;
+            attempts?: { model: string; error: string }[];
+          }>(
+            "/api/process",
+            {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ stage: stage.key, text: currentText, masterPrompt: config.masterPrompt, formatRules: config.formatRules, editRules: config.editRules, model: config.primaryModel, fallbackModels: config.fallbackModels, contextWindow: config.contextWindow, maxOutputTokens: config.maxOutputTokens, temperature: config.temperature, batch: { index: batchIndex, total: safeBatches.length }, contextBefore: continuity }),
-            });
-            const data = (await response.json()) as { ok?: boolean; output?: string; error?: string; modelUsed?: string; demo?: boolean; warning?: string; attempts?: { model: string; error: string }[] };
-            if (!response.ok || !data.ok || !data.output?.trim()) {
-              const attempts = data.attempts?.length ? ` ${data.attempts.map((attempt) => `${shortModel(attempt.model)}: ${attempt.error}`).join(" | ")}` : "";
-              throw new Error(`${data.error || "This pass did not return an output."}${attempts}`);
-            }
-            currentText = data.output.trim();
-            updateTrace(traceId, { status: "success", duration: Date.now() - stageStarted, model: data.modelUsed || config.primaryModel, demo: data.demo, message: data.warning || (data.modelUsed !== config.primaryModel ? "Alternative model used" : "Pass completed") });
-          } catch (caught) {
-            const message = caught instanceof Error ? caught.message : "The editorial pass failed.";
-            updateTrace(traceId, { status: "error", duration: Date.now() - stageStarted, model: config.primaryModel, message });
-            throw new Error(`Batch ${batchIndex + 1}, ${stage.label}: ${message}`);
+              body: JSON.stringify({
+                stage: stage.key,
+                text: currentText,
+                masterPrompt: config.masterPrompt,
+                formatRules: config.formatRules,
+                editRules: config.editRules,
+                model: config.primaryModel,
+                fallbackModels: config.fallbackModels,
+                contextWindow: config.contextWindow,
+                maxOutputTokens: config.maxOutputTokens,
+                temperature: config.temperature,
+                batch: { index: batchIndex, total: workBatches.length },
+                contextBefore: continuity,
+                kind,
+                jobId: currentJob.id,
+              }),
+            },
+            {
+              retries: 2,
+              onRetry: (attempt, reason) => pushLog(`Retrying ${stage.label} (${attempt})`, "info", reason),
+            },
+          );
+
+          if (!ok || !data.output?.trim()) {
+            const attempts = data.attempts?.length ? ` ${data.attempts.map((attempt) => `${shortModel(attempt.model)}: ${attempt.error}`).join(" | ")}` : "";
+            const message = `${data.error || "This pass did not return an output."}${attempts}`;
+            const event: ErrorEvent = {
+              id: makeId(),
+              timestamp: new Date().toISOString(),
+              stage: stage.key,
+              batch: batchIndex + 1,
+              total: workBatches.length,
+              code: "PASS_FAILED",
+              message,
+              retryable: data.retryable !== false,
+            };
+            void requestJson("/api/errors", { method: "POST", body: JSON.stringify({ jobId: currentJob.id, stage: stage.key, batch: batchIndex, code: "PASS_FAILED", message }) }, { retries: 0 });
+            const failed: JobRecord = {
+              ...currentJob,
+              batches: workBatches,
+              stages: {
+                normalize: assemble(workBatches, "normalize"),
+                format: assemble(workBatches, "format"),
+                edit: assemble(workBatches, "edit"),
+                refine: currentJob.stages.refine,
+              },
+              status: "failed",
+              resumeCursor: { batchIndex, stageIndex, continuity },
+              errorLog: [...currentJob.errorLog, event].slice(-80),
+              updatedAt: new Date().toISOString(),
+            };
+            await persist(failed);
+            setOverlayBusy(false);
+            setOverlayError({ message, retryable: event.retryable });
+            setOverlayTitle("This pass stopped");
+            setOverlaySteps((steps) => steps.map((item) => item.key === stage.key ? { ...item, status: "error" } : item));
+            pushLog(message, "error", `${stage.label} · batch ${batchIndex + 1}`);
+            return;
           }
+
+          currentText = data.output.trim();
+          if (stage.key === "normalize") workBatches[batchIndex].normalize = currentText;
+          if (stage.key === "format") workBatches[batchIndex].format = currentText;
+          if (stage.key === "edit") workBatches[batchIndex].edit = currentText;
+          pushLog(data.warning || `${stage.label} complete`, "success", data.modelUsed ? shortModel(data.modelUsed) : undefined);
+          currentJob = {
+            ...currentJob,
+            batches: workBatches.map((batch) => ({ ...batch })),
+            stages: {
+              normalize: assemble(workBatches, "normalize"),
+              format: assemble(workBatches, "format"),
+              edit: assemble(workBatches, "edit"),
+              refine: currentJob.stages.refine,
+            },
+            resumeCursor: { batchIndex, stageIndex: stageIndex + 1, continuity },
+            status: "running",
+            updatedAt: new Date().toISOString(),
+          };
+          await persist(currentJob);
         }
-        outputs.push(currentText);
         continuity = currentText.slice(-Math.max(0, config.overlapTokens) * 4);
       }
-      const edited = outputs.join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
-      setResult(edited);
-      setProgress({ stage: "idle", stageIndex: PIPELINE.length, batch: safeBatches.length, total: safeBatches.length });
-      addTrace({ stage: "complete", label: "Edit assembled", status: "success", batch: safeBatches.length, total: safeBatches.length, duration: Date.now() - startedAt, message: `${formatNumber(estimateTokens(edited))} output tokens` });
-      setRunState("complete");
+
+      const edited = assemble(workBatches, "edit") || assemble(workBatches, "format") || assemble(workBatches, "normalize");
+      const complete: JobRecord = {
+        ...currentJob,
+        batches: workBatches,
+        stages: {
+          normalize: assemble(workBatches, "normalize"),
+          format: assemble(workBatches, "format"),
+          edit: edited,
+          refine: currentJob.stages.refine,
+        },
+        result: edited,
+        status: "complete",
+        resumeCursor: null,
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(complete);
+      setOverlayPercent(100);
+      setOverlayBusy(false);
+      setOverlayTitle("Your edited transcript is ready");
+      setOverlaySubtitle(`Assembled in ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))}s. Open the canvas to copy any part.`);
+      setOverlaySteps(PIPELINE.map((stage) => ({ key: stage.key, label: stage.label, description: stage.description, status: "done" as const })));
+      pushLog("Edit assembled", "success", `${formatNumber(estimateTokens(edited))} output tokens`);
       setNotice({ tone: "success", message: "Your edited transcript is ready to review." });
     } catch (caught) {
-      setRunState("idle");
-      setError(caught instanceof Error ? caught.message : "The edit stopped unexpectedly.");
-      addTrace({ stage: "workflow", label: "Edit stopped", status: "error", message: "No partial output was assembled." });
+      const paused = caught instanceof Error && (caught.message === "PAUSED" || (caught as { code?: string }).code === "PAUSED");
+      const current = jobRef.current;
+      if (current) {
+        await persist({ ...current, status: paused ? "paused" : "failed", updatedAt: new Date().toISOString() });
+      }
+      setOverlayBusy(false);
+      if (paused) {
+        setOverlayTitle("Saved — continue whenever you are ready");
+        setOverlaySubtitle("Nothing was lost. Retry or continue from the last successful pass.");
+        pushLog("Run paused and saved", "info");
+      } else {
+        const message = caught instanceof Error ? caught.message : "The edit stopped unexpectedly.";
+        setOverlayError({ message, retryable: true });
+        setOverlayTitle("This edit stopped");
+        pushLog(message, "error");
+      }
     }
-  }, [addTrace, config, runState, updateTrace]);
+  }, [account.canBookJob, account.email, cap, config, createAndPersist, jobId, kind, overlayBusy, persist, pushLog, updateConfig]);
+
+  const runRefine = useCallback(async () => {
+    const current = jobRef.current;
+    const base = (current?.stages.refine || current?.stages.edit || current?.result || "").trim();
+    if (!base) {
+      setOverlayOpen(true);
+      setOverlayBusy(false);
+      setOverlayTitle("Nothing to refine yet");
+      setOverlayError({ message: "Run an edit first, then request changes from the canvas.", retryable: false });
+      return;
+    }
+    if (!refineInstruction.trim()) {
+      setOverlayOpen(true);
+      setOverlayBusy(false);
+      setOverlayTitle("Describe the change");
+      setOverlayError({ message: "Write the change you want — for example, tighten speaker labels or keep the joke.", retryable: false });
+      return;
+    }
+    pauseRef.current = false;
+    setOverlayOpen(true);
+    setOverlayBusy(true);
+    setOverlayError(null);
+    setOverlayTitle("Applying your requested changes");
+    setOverlaySubtitle("A refine pass uses the current edited transcript plus your instruction.");
+    setOverlayPercent(35);
+    pushLog("Refine pass started", "running");
+    const { ok, data } = await requestJson<{ output?: string; error?: string; retryable?: boolean; modelUsed?: string }>(
+      "/api/process",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          stage: "refine",
+          text: base,
+          masterPrompt: config.masterPrompt,
+          formatRules: config.formatRules,
+          editRules: `${config.editRules}\n\nRequested changes:\n${refineInstruction}`,
+          refineInstruction,
+          model: config.primaryModel,
+          fallbackModels: config.fallbackModels,
+          contextWindow: config.contextWindow,
+          maxOutputTokens: config.maxOutputTokens,
+          temperature: config.temperature,
+          kind,
+          jobId: current?.id,
+        }),
+      },
+      { retries: 2, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
+    );
+    if (!ok || !data.output?.trim()) {
+      setOverlayBusy(false);
+      setOverlayError({ message: data.error || "The refine pass did not return an output.", retryable: data.retryable !== false });
+      return;
+    }
+    if (current) {
+      await persist({
+        ...current,
+        stages: { ...current.stages, refine: data.output.trim() },
+        result: data.output.trim(),
+        status: "complete",
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    setOverlayPercent(100);
+    setOverlayBusy(false);
+    setOverlayTitle("Requested changes applied");
+    pushLog("Refine complete", "success", data.modelUsed ? shortModel(data.modelUsed) : undefined);
+    setNotice({ tone: "success", message: "The refined version is on the canvas." });
+  }, [config, kind, persist, pushLog, refineInstruction]);
 
   const runCrossCheck = useCallback(async () => {
-    if (!result || checking) return;
+    const text = job?.result || job?.stages.edit || "";
+    if (!text || checking) return;
     setChecking(true);
-    await new Promise((resolve) => window.setTimeout(resolve, 300));
-    const checks = sectionChecks(result);
-    setCrossChecks(checks);
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    const checks = sectionChecks(text);
+    if (jobRef.current) await persist({ ...jobRef.current, crossChecks: checks, updatedAt: new Date().toISOString() });
     setChecking(false);
-    setNotice({ tone: checks.some((check) => check.status === "review") ? "info" : "success", message: checks.some((check) => check.status === "review") ? "A few sections need a human look." : "Every section passed the review scan." });
-  }, [checking, result]);
-
-  const copyResult = useCallback(async () => {
-    if (!result) return;
-    try {
-      await navigator.clipboard.writeText(result);
-      setNotice({ tone: "success", message: "Edited transcript copied." });
-    } catch { setNotice({ tone: "info", message: "Copy is not available in this browser." }); }
-  }, [result]);
+    setNotice({
+      tone: checks.some((check) => check.status === "review") ? "info" : "success",
+      message: checks.some((check) => check.status === "review") ? "A few sections need a human look." : "Every section passed the review scan.",
+    });
+  }, [checking, job, persist]);
 
   const downloadText = useCallback(() => {
+    const result = job?.result || job?.stages.edit || "";
     if (!result) return;
-    downloadBlob(new Blob([result], { type: "text/plain;charset=utf-8" }), `${slugify(config.name)}.txt`);
-  }, [config.name, result]);
+    downloadBlob(new Blob([result], { type: "text/plain;charset=utf-8" }), `${slugify(job?.title || config.name)}.txt`);
+  }, [config.name, job]);
 
   const downloadPdf = useCallback(() => {
+    const result = job?.result || job?.stages.edit || "";
     if (!result) return;
     const pdf = new jsPDF({ unit: "pt", format: "letter" });
     const margin = 54;
@@ -292,7 +545,7 @@ export default function WorkspaceClient() {
     pdf.setTextColor(27, 40, 40);
     pdf.setFont("helvetica", "bold");
     pdf.setFontSize(17);
-    pdf.text(config.name || "Edited transcript", margin, margin);
+    pdf.text(job?.title || config.name || "Edited transcript", margin, margin);
     pdf.setFont("helvetica", "normal");
     pdf.setFontSize(8);
     pdf.setTextColor(110, 123, 122);
@@ -301,64 +554,253 @@ export default function WorkspaceClient() {
     pdf.setFontSize(10.5);
     const lines = pdf.splitTextToSize(result, width) as string[];
     let y = margin + 48;
-    lines.forEach((line) => { if (y > bottom) { pdf.addPage(); y = margin; } pdf.text(line, margin, y); y += 15; });
-    pdf.save(`${slugify(config.name)}.pdf`);
-  }, [config.name, result]);
-
-  const exportWorkflow = useCallback(() => {
-    downloadBlob(new Blob([JSON.stringify({ type: "transcripter-workflow", version: 2, exportedAt: new Date().toISOString(), config, result, crossChecks }, null, 2)], { type: "application/json" }), `${slugify(config.name)}.workflow.json`);
-    setNotice({ tone: "success", message: "Workflow exported." });
-  }, [config, crossChecks, result]);
-
-  const importWorkflow = useCallback((event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-    file.text().then((raw) => {
-      try {
-        const payload = JSON.parse(raw) as { config?: unknown; result?: string; crossChecks?: SectionCheck[] };
-        setConfig(normalizeConfig(payload.config || payload));
-        setResult(typeof payload.result === "string" ? payload.result : "");
-        setCrossChecks(Array.isArray(payload.crossChecks) ? payload.crossChecks : []);
-        setRunState(payload.result ? "complete" : "idle");
-        setNotice({ tone: "success", message: "Workflow imported." });
-      } catch { setError("That file is not a valid workflow export."); }
+    lines.forEach((line) => {
+      if (y > bottom) {
+        pdf.addPage();
+        y = margin;
+      }
+      pdf.text(line, margin, y);
+      y += 15;
     });
-  }, []);
+    pdf.save(`${slugify(job?.title || config.name)}.pdf`);
+  }, [config.name, job]);
 
-  const stagePercent = runState === "complete" ? 100 : progress.total ? Math.max(4, Math.round(((progress.batch * PIPELINE.length + Math.max(progress.stageIndex, 0)) / (progress.total * PIPELINE.length)) * 100)) : 0;
+  const onChangePart = useCallback((part: "source" | "normalize" | "format" | "edit" | "refine", value: string) => {
+    if (part === "source") {
+      updateConfig("transcript", value);
+      if (jobRef.current) void persist({ ...jobRef.current, source: value, wordCount: countWords(value), updatedAt: new Date().toISOString() });
+      return;
+    }
+    if (!jobRef.current) return;
+    const stages = { ...jobRef.current.stages, [part]: value };
+    const result = part === "refine" || part === "edit" ? value : jobRef.current.result;
+    void persist({ ...jobRef.current, stages, result, updatedAt: new Date().toISOString() });
+  }, [persist, updateConfig]);
 
-  return <main className="workspace-page">
-    <header className="page-header workspace-header"><div><p className="overline">NEW EDIT</p><h1>Start with the source.</h1><p className="page-subtitle">Bring in a transcript. The workspace will move it through your saved editorial direction, one controlled pass at a time.</p></div><div className="header-actions"><Link className="text-link" href="/settings">Open settings <Icon name="arrow" size={15} /></Link><button className="quiet-button" onClick={exportWorkflow} disabled={!config.transcript}><Icon name="download" size={15} />Export</button></div></header>
-    {notice && <div className={`workspace-notice ${notice.tone}`}><Icon name={notice.tone === "error" ? "alert" : notice.tone === "success" ? "check" : "spark"} size={16} /><span>{notice.message}</span><button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" size={15} /></button></div>}
-    {error && <div className="workspace-error" role="alert"><Icon name="alert" size={17} /><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss"><Icon name="x" size={15} /></button></div>}
+  if (!hydrated) return <main className="workspace-page"><div className="loading-state"><span className="spinner dark" />Opening workspace</div></main>;
 
-    {runState === "idle" && <section className="intake-layout">
-      <div className="intake-main">
-        <div className="card card-source">
-          <div className="card-topline"><div><p className="overline">SOURCE</p><h2>What are we editing?</h2></div><span className="step-label">01 / 01</span></div>
-          <div className="source-input-wrap"><textarea value={config.transcript} onChange={(event) => { updateConfig("transcript", event.target.value); setError(""); }} placeholder="Paste your transcript here…" aria-label="Transcript source" spellCheck={false} /><div className="source-meta"><span>{config.transcript ? `${formatNumber(config.transcript.length)} characters` : "Paste or upload a transcript"}</span><span>{config.transcript ? `${formatNumber(inputTokens)} estimated tokens` : "TXT, MD, or V.txt ZIP"}</span></div></div>
-          <div className="upload-row" onClick={() => transcriptInputRef.current?.click()} onDrop={onDrop} onDragOver={(event) => event.preventDefault()} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") transcriptInputRef.current?.click(); }}><input ref={transcriptInputRef} className="visually-hidden" type="file" accept=".txt,.md,.markdown,.zip,text/plain,application/zip" onChange={onFileInput} /><span className="upload-icon"><Icon name="upload" size={17} /></span><span><strong>Drop a file here</strong><small>V.txt is selected automatically inside ZIP files</small></span><span className="upload-browse">Browse <Icon name="chevron" size={13} /></span></div>
+  const passedChecks = (job?.crossChecks || []).filter((check) => check.status === "pass").length;
+  const flaggedChecks = (job?.crossChecks || []).filter((check) => check.status === "review").length;
+
+  return (
+    <main className="workspace-page">
+      <header className="page-header workspace-header">
+        <div>
+          <p className="overline">{jobId ? "TRANSCRIPT" : "NEW TRANSCRIPT"}</p>
+          <h1>{jobId ? job?.title || "Open canvas" : "Start with the source."}</h1>
+          <p className="page-subtitle">
+            {jobId
+              ? "Review every stage, copy or paste any part, request changes, or continue a stopped run."
+              : "Paste a transcript, adjust the guiding rules if you need to, then run a demo or book a job."}
+          </p>
         </div>
-        <div className="source-footer"><div className="source-file"><Icon name="file" size={15} /><span>{config.sourceFileName || "Untitled source"}</span></div><label className="import-label">Import workflow<input className="visually-hidden" type="file" accept="application/json,.json" onChange={importWorkflow} /></label></div>
-      </div>
-      <aside className="intake-side">
-        <div className="card direction-card"><div className="card-topline"><p className="overline">EDITORIAL DIRECTION</p><Icon name="edit" size={17} /></div><h3>{config.name}</h3><p>{config.description || "Saved rules will shape each pass. Change the direction in Settings."}</p><div className="direction-pills"><span><i />Format rules</span><span><i />Edit rules</span><span><i />Master prompt</span></div><Link href="/settings" className="card-link">Review direction <Icon name="arrow" size={14} /></Link></div>
-        <div className="run-panel"><div className="run-panel-icon"><Icon name="play" size={18} /></div><div><p className="overline">READY TO EDIT</p><h3>{batches.length || "—"} {batches.length === 1 ? "batch" : "batches"}</h3><p>Each batch goes through Normalize, Format, and Edit.</p></div><button className="primary-button run-button" onClick={runWorkflow} disabled={!config.transcript.trim()}><span>Run edit</span><Icon name="arrow" size={15} /></button></div>
-      </aside>
-    </section>}
+        <div className="header-actions">
+          <Link className="text-link" href="/history">History <Icon name="arrow" size={15} /></Link>
+          {jobId && <Link className="quiet-button" href="/workspace"><Icon name="plus" size={15} />New transcript</Link>}
+        </div>
+      </header>
 
-    {runState === "running" && <RunView progress={progress} progressPercent={stagePercent} trace={trace} batchCount={batches.length} />}
-    {runState === "complete" && <ReviewView result={result} outputTokens={outputTokens} crossChecks={crossChecks} passedChecks={passedChecks} flaggedChecks={flaggedChecks} checking={checking} runCrossCheck={runCrossCheck} copyResult={copyResult} downloadText={downloadText} downloadPdf={downloadPdf} onRunAgain={() => setRunState("idle")} />}
+      {account.status === "awaiting_approval" && (
+        <div className="workspace-notice info">
+          <Icon name="lock" size={16} />
+          <span>Your registration is awaiting approval. You can run a demo of up to {cap} words. Booking a full job unlocks after an admin sets your status to approved.</span>
+        </div>
+      )}
+      {notice && (
+        <div className={`workspace-notice ${notice.tone}`}>
+          <Icon name={notice.tone === "error" ? "alert" : notice.tone === "success" ? "check" : "spark"} size={16} />
+          <span>{notice.message}</span>
+          <button onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" size={15} /></button>
+        </div>
+      )}
 
-    <footer className="workspace-footer"><span>Source stays in your private workspace.</span><span>Rules are applied consistently across every batch.</span></footer>
-  </main>;
-}
+      {!showCanvas && (
+        <section className="intake-layout">
+          <div className="intake-main">
+            <div className="card card-source">
+              <div className="card-topline">
+                <div>
+                  <p className="overline">SOURCE</p>
+                  <h2>What are we editing?</h2>
+                </div>
+                <span className="step-label">{kind === "demo" ? "DEMO" : "JOB"}</span>
+              </div>
+              <div className="source-input-wrap">
+                <textarea
+                  value={config.transcript}
+                  onChange={(event) => updateConfig("transcript", event.target.value)}
+                  placeholder="Paste your transcript here…"
+                  aria-label="Transcript source"
+                  spellCheck={false}
+                />
+                <div className="source-meta">
+                  <span>{config.transcript ? `${formatNumber(config.transcript.length)} characters · ${formatNumber(words)} words` : "Paste or upload a transcript"}</span>
+                  <span className={overCap ? "cap-warn" : ""}>
+                    {kind === "demo" ? `${Math.min(words, cap)} / ${cap} demo words` : `${formatNumber(estimateTokens(config.transcript))} estimated tokens`}
+                  </span>
+                </div>
+              </div>
+              <div
+                className="upload-row"
+                onClick={() => transcriptInputRef.current?.click()}
+                onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); void handleFile(event.dataTransfer.files?.[0]); }}
+                onDragOver={(event) => event.preventDefault()}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") transcriptInputRef.current?.click(); }}
+              >
+                <input ref={transcriptInputRef} className="visually-hidden" type="file" accept=".txt,.md,.markdown,.zip,text/plain,application/zip" onChange={(event: ChangeEvent<HTMLInputElement>) => { void handleFile(event.target.files?.[0]); event.target.value = ""; }} />
+                <span className="upload-icon"><Icon name="upload" size={17} /></span>
+                <span><strong>Drop a file here</strong><small>V.txt is selected automatically inside ZIP files</small></span>
+                <span className="upload-browse">Browse <Icon name="chevron" size={13} /></span>
+              </div>
+            </div>
+            <div className="source-footer">
+              <div className="source-file"><Icon name="file" size={15} /><span>{config.sourceFileName || "Untitled source"}</span></div>
+              <CopyButton text={config.transcript} label="Copy source" />
+            </div>
+          </div>
+          <aside className="intake-side">
+            <div className="card direction-card">
+              <div className="card-topline"><p className="overline">GUIDING RULES</p><Icon name="edit" size={17} /></div>
+              <h3>{config.name}</h3>
+              <p>{config.description || "Saved rules shape each pass. Adjust them here for this transcript, or change workspace defaults in Guiding rules."}</p>
+              <button type="button" className="card-link" onClick={() => setRulesOpen((open) => !open)}>
+                {rulesOpen ? "Hide rules" : "Adjust rules"} <Icon name="chevron" size={14} />
+              </button>
+              {rulesOpen && <GuidingRules config={config} onChange={updateConfig} />}
+              <Link href="/settings" className="card-link">Workspace defaults <Icon name="arrow" size={14} /></Link>
+            </div>
+            <div className="run-panel">
+              <div className="run-panel-icon"><Icon name="play" size={18} /></div>
+              <p className="overline">READY TO EDIT</p>
+              <h3>{batches.length || "—"} {batches.length === 1 ? "batch" : "batches"}</h3>
+              <p>Each batch goes through Normalize, Format, and Edit. Progress appears in a proceeding popup — not an alert.</p>
+              <div className="kind-toggle" role="group" aria-label="Run kind">
+                <button type="button" className={kind === "demo" ? "active" : ""} onClick={() => setKind("demo")}>Demo · {cap} words</button>
+                <button
+                  type="button"
+                  className={kind === "job" ? "active" : ""}
+                  onClick={() => {
+                    if (!account.canBookJob) {
+                      setOverlayOpen(true);
+                      setOverlayBusy(false);
+                      setOverlayTitle("Jobs require approval");
+                      setOverlayError({ message: `Your status is ${account.status.replace("_", " ")}. An admin has to set it to approved before you can book a job.`, retryable: false });
+                      return;
+                    }
+                    setKind("job");
+                  }}
+                >
+                  Book a job
+                </button>
+              </div>
+              {overCap && <p className="cap-note">Demo will use the first {cap} words. Extra wording waits until this account is approved.</p>}
+              <button className="primary-button run-button" onClick={() => void runWorkflow("fresh")} disabled={!config.transcript.trim()}>
+                <span>{kind === "demo" ? "Run demo" : "Book this job"}</span>
+                <Icon name="arrow" size={15} />
+              </button>
+            </div>
+          </aside>
+        </section>
+      )}
 
-function RunView({ progress, progressPercent, trace, batchCount }: { progress: Progress; progressPercent: number; trace: TraceEvent[]; batchCount: number }) {
-  return <section className="run-view"><div className="run-view-heading"><div><p className="overline">IN PROGRESS</p><h2>Working through your source.</h2><p>Each pass is isolated, traced, and handed to the next pass only after it completes.</p></div><div className="run-percent"><strong>{progressPercent}</strong><span>%</span></div></div><div className="progress-track"><span style={{ width: `${progressPercent}%` }} /></div><div className="run-summary"><span>{progress.batch + 1} of {batchCount} batches</span><span>{PIPELINE[progress.stageIndex]?.label || "Preparing"}</span></div><div className="process-list">{PIPELINE.map((stage, index) => { const status = progress.stageIndex > index ? "done" : progress.stageIndex === index ? "active" : "waiting"; return <div className={`process-row ${status}`} key={stage.key}><span className="process-number">{status === "done" ? <Icon name="check" size={14} /> : String(index + 1).padStart(2, "0")}</span><div><strong>{stage.label}</strong><span>{stage.description}</span></div><em>{status === "done" ? "Complete" : status === "active" ? "Working" : "Queued"}</em></div>; })}</div><div className="trace-mini"><div className="trace-mini-head"><span>LIVE TRACE</span><span>{trace.length} events</span></div>{trace.slice(0, 6).map((event) => <div className={`trace-mini-row ${event.status}`} key={event.id}><span className="trace-mini-dot" /><span>{event.label}</span><small>{event.batch && event.total ? `Batch ${event.batch}/${event.total}` : event.status}</small></div>)}</div></section>;
-}
+      {showCanvas && job && (
+        <section className="review-view">
+          <div className="review-heading">
+            <div>
+              <p className="overline">{job.status === "complete" ? "EDIT COMPLETE" : job.status.toUpperCase()}</p>
+              <h2>Complete edits canvas.</h2>
+              <p>Copy or paste any stage. Request changes, continue a stopped run, or start a new transcript — this one stays in history.</p>
+            </div>
+            <div className="review-actions">
+              {(job.status === "failed" || job.status === "paused") && (
+                <button className="primary-button" onClick={() => void runWorkflow("retry")}><Icon name="refresh" size={15} />Continue</button>
+              )}
+              <button className="quiet-button" onClick={() => void runWorkflow("fresh")}><Icon name="refresh" size={15} />Run again</button>
+              <CopyButton text={job.result || job.stages.edit} label="Copy final" />
+              <button className="quiet-button" onClick={downloadText}><Icon name="download" size={15} />TXT</button>
+              <button className="primary-button" onClick={downloadPdf}><Icon name="download" size={15} />PDF</button>
+            </div>
+          </div>
+          <EditsCanvas job={job} onChangePart={onChangePart} />
+          <div className="review-grid canvas-follow">
+            <div className="card check-card">
+              <div className="card-topline">
+                <div>
+                  <p className="overline">QUALITY CHECK</p>
+                  <h3>Does it hold up?</h3>
+                </div>
+                <Icon name="check" size={17} />
+              </div>
+              <p>Scan sections for unresolved markers, repetition, and punctuation issues without changing the text.</p>
+              <button className="secondary-button" onClick={() => void runCrossCheck()} disabled={checking}>
+                {checking ? <><span className="spinner dark" />Checking</> : <><Icon name="activity" size={15} />{(job.crossChecks || []).length ? "Run again" : "Cross-check sections"}</>}
+              </button>
+              {(job.crossChecks || []).length > 0 && (
+                <div className="check-result">
+                  <strong>{flaggedChecks ? "Human review needed" : "Looks clean"}</strong>
+                  <span><b>{passedChecks}</b> passed · <b>{flaggedChecks}</b> to review</span>
+                </div>
+              )}
+            </div>
+            <div className="card refine-card">
+              <p className="overline">REQUEST CHANGES</p>
+              <h3>Refine this edit</h3>
+              <p>Describe the adjustment. The refine pass starts from the current edited (or already refined) text.</p>
+              <textarea value={refineInstruction} onChange={(event) => setRefineInstruction(event.target.value)} placeholder="e.g. Keep the joke, tighten speaker labels, do not summarize." />
+              <button className="primary-button" onClick={() => void runRefine()} disabled={overlayBusy}>Apply refine pass</button>
+            </div>
+            <div className="card handoff-card">
+              <p className="overline">NEXT</p>
+              <h3>Start a new transcript</h3>
+              <p>This canvas stays in history. Open guiding rules if the next source needs a different contract.</p>
+              <Link href="/workspace" className="card-link">New transcript <Icon name="arrow" size={14} /></Link>
+              <Link href="/settings" className="card-link">Adjust guiding rules <Icon name="arrow" size={14} /></Link>
+            </div>
+          </div>
+          {job.errorLog.length > 0 && (
+            <div className="error-log card">
+              <p className="overline">ERROR LOG</p>
+              {job.errorLog.slice(-8).map((event) => (
+                <div className="trace-mini-row error" key={event.id}>
+                  <span className="trace-mini-dot" />
+                  <span>{event.message}</span>
+                  <small>{event.stage}{event.batch ? ` · batch ${event.batch}` : ""}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
-function ReviewView({ result, outputTokens, crossChecks, passedChecks, flaggedChecks, checking, runCrossCheck, copyResult, downloadText, downloadPdf, onRunAgain }: { result: string; outputTokens: number; crossChecks: SectionCheck[]; passedChecks: number; flaggedChecks: number; checking: boolean; runCrossCheck: () => void; copyResult: () => void; downloadText: () => void; downloadPdf: () => void; onRunAgain: () => void }) {
-  return <section className="review-view"><div className="review-heading"><div><p className="overline">EDIT COMPLETE</p><h2>Your edited transcript.</h2><p>Review the assembled version below. The source order is preserved across every batch.</p></div><div className="review-actions"><button className="quiet-button" onClick={onRunAgain}><Icon name="refresh" size={15} />Edit again</button><button className="quiet-button" onClick={copyResult}><Icon name="copy" size={15} />Copy</button><button className="quiet-button" onClick={downloadText}><Icon name="download" size={15} />TXT</button><button className="primary-button" onClick={downloadPdf}><Icon name="download" size={15} />PDF</button></div></div><div className="review-grid"><div className="card output-card"><div className="output-topline"><span><i />EDITED VERSION</span><span>{formatNumber(outputTokens)} estimated tokens</span></div><pre>{result}</pre></div><aside className="review-side"><div className="card check-card"><div className="card-topline"><div><p className="overline">QUALITY CHECK</p><h3>Does it hold up?</h3></div><Icon name="check" size={17} /></div><p>Scan sections for unresolved markers, repetition, and punctuation issues without changing the text.</p><button className="secondary-button" onClick={runCrossCheck} disabled={checking}>{checking ? <><span className="spinner dark" />Checking</> : <><Icon name="activity" size={15} />{crossChecks.length ? "Run again" : "Cross-check sections"}</>}</button>{crossChecks.length > 0 && <div className="check-result"><strong>{flaggedChecks ? "Human review needed" : "Looks clean"}</strong><span><b>{passedChecks}</b> passed · <b>{flaggedChecks}</b> to review</span></div>}</div><div className="card handoff-card"><p className="overline">NEXT</p><h3>Need another pass?</h3><p>Update your direction in Settings, then run the source again. Your original transcript remains unchanged.</p><Link href="/settings" className="card-link">Open settings <Icon name="arrow" size={14} /></Link></div></aside></div></section>;
+      <footer className="workspace-footer">
+        <span>Source stays in your private workspace.</span>
+        <span>{account.canBookJob ? "Approved accounts can book full jobs." : `Demo cap ${cap} words until approval.`}</span>
+      </footer>
+
+      <ProceedingOverlay
+        open={overlayOpen}
+        title={overlayTitle}
+        subtitle={overlaySubtitle}
+        percent={overlayPercent}
+        summaryLeft={summaryLeft}
+        summaryRight={summaryRight}
+        steps={overlaySteps}
+        log={overlayLog}
+        error={overlayError}
+        busy={overlayBusy}
+        onRetry={() => void runWorkflow("retry")}
+        onContinue={() => {
+          pauseRef.current = true;
+          setOverlayOpen(false);
+          if (jobRef.current) void persist({ ...jobRef.current, status: "paused", updatedAt: new Date().toISOString() });
+        }}
+        onPause={() => {
+          pauseRef.current = true;
+        }}
+        onClose={() => setOverlayOpen(false)}
+      />
+    </main>
+  );
 }

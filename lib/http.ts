@@ -47,8 +47,9 @@ export async function requestJson<T = Record<string, unknown>>(
         }
         return { ok: false, status: response.status, data: { error: lastReason, code: "BAD_RESPONSE" } as T };
       }
-      const payload = data as { ok?: boolean; error?: string };
-      const retryableHttp = response.status === 429 || response.status >= 500;
+      const payload = data as { ok?: boolean; error?: string; retryable?: boolean };
+      // Only retry on 429 rate limit or retryable status if explicitly permitted; NEVER freeze user on 504 / 502
+      const retryableHttp = response.status === 429 && payload.retryable !== false;
       if (retryableHttp && attempt < retries) {
         lastReason = payload.error || `HTTP ${response.status}`;
         control.onRetry?.(attempt + 1, lastReason);

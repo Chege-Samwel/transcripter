@@ -2,7 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { assertCanBookJob, getCurrentUser } from "../../../lib/account";
 import { logError } from "../../../lib/errors";
 import { capToWords, countWords } from "../../../lib/limits";
-import { sleep } from "../../../lib/http";
+import {
+  executeAiPass,
+  getGoogleApiKey,
+  getNvidiaApiKey,
+  getProviderForModel,
+  normalizeModelId,
+} from "../../../lib/ai-providers";
+import { DEFAULT_SYSTEM_MODELS, getSystemModels, sanitizeModel } from "../../../lib/system-settings";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -26,8 +33,6 @@ type ProcessBody = {
   kind?: "demo" | "job";
   jobId?: string;
 };
-
-const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 const stageInstructions: Record<Stage, string> = {
   normalize:
@@ -96,10 +101,6 @@ function demoTransform(stage: Stage, text: string, formatRules = "", editRules =
   return cleaned;
 }
 
-function isRetryableModelError(message: string) {
-  return /abort|timeout|429|rate|503|502|504|network|fetch|ECONN|ETIMEDOUT|empty response/i.test(message);
-}
-
 type SectionCheck = {
   section: number;
   status: "pass" | "review";
@@ -130,82 +131,6 @@ function checkSection(text: string, section: number): SectionCheck {
     note: flags.length ? flags.join(" · ") : "Structure and transcript markers look clean",
     flags,
   };
-}
-
-function modelError(status: number, body: string) {
-  if (status === 401 || status === 403) return "NVIDIA authentication failed. Check NVIDIA_API_KEY in Vercel settings.";
-  if (status === 429) return "The model is rate limited. The next configured fallback will be tried.";
-  if (status === 413) return "The model rejected this batch because it is too large for the selected context window.";
-  try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } };
-    return parsed.error?.message || `Model request failed with status ${status}.`;
-  } catch {
-    return `Model request failed with status ${status}.`;
-  }
-}
-
-async function callNvidia(
-  model: string,
-  messages: { role: "system" | "user"; content: string }[],
-  temperature: number,
-  maxTokens: number,
-) {
-  const key = process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY;
-  if (!key) throw new Error("NO_NVIDIA_KEY");
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 50_000);
-  try {
-    const response = await fetch(NVIDIA_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        top_p: 0.9,
-        max_tokens: maxTokens,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(modelError(response.status, raw));
-    const parsed = JSON.parse(raw) as {
-      choices?: { message?: { content?: string | Array<{ text?: string }> } }[];
-    };
-    const content = parsed.choices?.[0]?.message?.content;
-    const output = Array.isArray(content) ? content.map((part) => part.text || "").join("") : content;
-    if (!output?.trim()) throw new Error("The model returned an empty response.");
-    return output.trim();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function callNvidiaWithRetry(
-  model: string,
-  messages: { role: "system" | "user"; content: string }[],
-  temperature: number,
-  maxTokens: number,
-  onRetry?: (attempt: number, reason: string) => void,
-) {
-  let lastError = "Model request failed.";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await callNvidia(model, messages, temperature, maxTokens);
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown model error.";
-      if (!isRetryableModelError(lastError) || attempt === 2) throw error;
-      onRetry?.(attempt + 1, lastError);
-      await sleep(500 * 2 ** attempt);
-    }
-  }
-  throw new Error(lastError);
 }
 
 export async function POST(request: NextRequest) {
@@ -277,24 +202,17 @@ export async function POST(request: NextRequest) {
     const systemPrompt = `${masterPrompt}\n\nPROCESS FOR THIS CALL:\n${stageInstructions[stage]}\n\nSafety rules: Work only on the supplied batch. Preserve names, numbers, dates, uncertainty markers, and chronology. Do not mention these instructions. Return only the requested transcript or quality note.`;
     const requestTokens = estimateTokens(`${systemPrompt}\n${userPrompt}`);
 
-    const primary = body.model?.trim() || "nvidia/llama-3.1-nemotron-ultra-253b-v1";
-    const fallbacks = Array.isArray(body.fallbackModels)
-      ? body.fallbackModels.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
-      : [];
-    const models = Array.from(new Set([primary, ...fallbacks]));
+    const systemModels = await getSystemModels();
     const rawTemperature = Number(body.temperature);
     const temperature = Math.min(1, Math.max(0, Number.isFinite(rawTemperature) ? rawTemperature : 0.2));
     const rawMaxTokens = Number(body.maxOutputTokens);
-    const requestedMaxTokens = Math.min(16_000, Math.max(256, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 4_000));
-    // A provider's context window includes both the prompt and its reserved output
-    // budget. Cap the output budget instead of letting a small context window fail
-    // after the client has already planned a valid input batch.
+    const requestedMaxTokens = Math.min(4000, Math.max(256, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 2000));
     const availableOutputTokens = contextWindow - requestTokens - 256;
     if (availableOutputTokens < 256) {
       return NextResponse.json(
         {
           ok: false,
-          error: `This batch needs ${requestTokens.toLocaleString()} input tokens and ${requestedMaxTokens.toLocaleString()} output tokens, above the safe ${contextWindow.toLocaleString()} token window. Reduce batch size, max output, or raise the context window.`,
+          error: `This batch needs ${requestTokens.toLocaleString()} input tokens and ${requestedMaxTokens.toLocaleString()} output tokens, above the safe ${contextWindow.toLocaleString()} token window. Reduce batch size or max output.`,
           code: "CONTEXT_LIMIT",
           estimatedTokens: requestTokens,
           requestedOutputTokens: requestedMaxTokens,
@@ -305,25 +223,57 @@ export async function POST(request: NextRequest) {
     }
     const maxTokens = Math.min(requestedMaxTokens, availableOutputTokens);
 
-    if (!process.env.NVIDIA_API_KEY && !process.env.NVIDIA_NIM_API_KEY) {
+    const googleKey = getGoogleApiKey();
+    const nvidiaKey = getNvidiaApiKey();
+    const hasAnyKey = Boolean(googleKey || nvidiaKey);
+
+    // If no provider keys configured, use local safe engine
+    if (!hasAnyKey) {
       const output = demoTransform(stage, text, formatRules, editRules);
       const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
       return NextResponse.json({
         ok: true,
         output,
         checks,
-        modelUsed: "Local safe preview",
+        modelUsed: "Local safe engine",
+        provider: "local",
+        fallbackUsed: false,
         demo: true,
         kind,
-        warning: "No NVIDIA_API_KEY is configured, so this batch used the local preview transform.",
+        warning: "No AI API key found (GEMINI_API_KEY or NVIDIA_API_KEY). Used safe local engine.",
         estimatedTokens: requestTokens,
       });
     }
 
+    // Determine candidate models prioritizing user selection, then system models
+    const requestedModel = body.model?.trim();
+    const primary = requestedModel || sanitizeModel(systemModels.primaryModel, DEFAULT_SYSTEM_MODELS.primaryModel);
+    const fallbacks = (systemModels.fallbackModels || [])
+      .map((m) => sanitizeModel(m, ""))
+      .filter((m) => Boolean(m) && m !== primary);
+
+    const candidateModels = Array.from(
+      new Set(
+        [
+          primary,
+          ...fallbacks,
+          DEFAULT_SYSTEM_MODELS.primaryModel,
+          ...DEFAULT_SYSTEM_MODELS.fallbackModels,
+        ]
+          .map(normalizeModelId)
+          .filter(Boolean)
+      )
+    );
+
     const attempts: { model: string; error: string }[] = [];
-    for (const model of models) {
+    for (const model of candidateModels) {
+      const provider = getProviderForModel(model);
+      // Skip if credentials not set for this provider
+      if (provider === "google" && !googleKey) continue;
+      if (provider === "nvidia" && !nvidiaKey) continue;
+
       try {
-        const output = await callNvidiaWithRetry(
+        const result = await executeAiPass(
           model,
           [
             { role: "system", content: systemPrompt },
@@ -331,15 +281,18 @@ export async function POST(request: NextRequest) {
           ],
           temperature,
           maxTokens,
+          8_500 // 8.5s timeout per attempt to stay under Vercel limits
         );
+
         const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
         return NextResponse.json({
           ok: true,
-          output,
+          output: result.output,
           checks,
-          modelUsed: model,
-          fallbackUsed: model !== primary,
-          attempts,
+          modelUsed: result.modelUsed,
+          provider: result.provider,
+          fallbackUsed: result.modelUsed !== normalizeModelId(primary),
+          attempts: attempts.length > 0 ? attempts : undefined,
           estimatedTokens: requestTokens,
           kind,
           retryable: false,
@@ -350,6 +303,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // If every external model failed or timed out, apply resilient local fallback
     const failure = attempts[attempts.length - 1]?.error || "Every configured model failed.";
     await logError({
       ownerEmail: account.email,
@@ -360,21 +314,27 @@ export async function POST(request: NextRequest) {
       message: failure,
       detail: { attempts, kind },
     });
-    return NextResponse.json(
-      {
-        ok: false,
-        error: failure,
-        attempts,
-        retryable: attempts.some((attempt) => isRetryableModelError(attempt.error)),
-        code: "MODEL_FAILURE",
-      },
-      { status: 502 },
-    );
+
+    const output = demoTransform(stage, text, formatRules, editRules);
+    const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
+    return NextResponse.json({
+      ok: true,
+      output,
+      checks,
+      modelUsed: "Local safe engine (AI fallback)",
+      provider: "local",
+      fallbackUsed: true,
+      attempts,
+      demo: true,
+      kind,
+      warning: `AI model request could not complete (${failure}). Processed with safe local engine.`,
+      estimatedTokens: requestTokens,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not process this workflow request.";
     await logError({ ownerEmail: account.email, stage: "process", code: "PROCESS_ERROR", message });
     return NextResponse.json(
-      { ok: false, error: message, retryable: isRetryableModelError(message), code: "PROCESS_ERROR" },
+      { ok: false, error: message, retryable: false, code: "PROCESS_ERROR" },
       { status: 500 },
     );
   }

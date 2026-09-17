@@ -1,14 +1,52 @@
 export type StageKey = "normalize" | "format" | "edit";
 export type TraceStatus = "queued" | "running" | "success" | "error";
 
+export type OutputGuideCheck = {
+  id: string;
+  label: string;
+  description: string;
+  rule: string;
+  category: "speaker" | "structure" | "punctuation" | "verbatim" | "formatting";
+};
+
+export type OutputGuide = {
+  title: string;
+  description: string;
+  speakerFormat: string;
+  paragraphRules: string;
+  punctuationRules: string;
+  uncertaintyMarkers: string;
+  editorialNotes?: string;
+  checks: OutputGuideCheck[];
+};
+
+export type WorkflowTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  isDefault?: boolean;
+  ownerEmail?: string;
+  formatRules: string;
+  editRules: string;
+  masterPrompt: string;
+  outputGuide: OutputGuide;
+  sampleInput?: string;
+  sampleOutput?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type WorkflowConfig = {
   name: string;
   description: string;
+  templateId?: string;
   transcript: string;
   sourceFileName: string;
   formatRules: string;
   editRules: string;
   masterPrompt: string;
+  outputGuide: OutputGuide;
   primaryModel: string;
   fallbackModels: string[];
   contextWindow: number;
@@ -56,11 +94,160 @@ export const PIPELINE: { key: StageKey; label: string; description: string }[] =
 ];
 
 export const MODEL_OPTIONS = [
-  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-  "nvidia/llama-3.1-nemotron-4b-instruct",
-  "meta/llama-3.1-70b-instruct",
+  "gemini-2.0-flash",
+  "gemini-2.5-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-pro",
+  "meta/llama-3.3-70b-instruct",
+  "nvidia/llama-3.1-nemotron-70b-instruct",
   "meta/llama-3.1-8b-instruct",
+  "mistralai/mixtral-8x7b-instruct",
+  "qwen/qwen2.5-72b-instruct",
+];
+
+export const DEFAULT_OUTPUT_GUIDE: OutputGuide = {
+  title: "Standard Publication Layout & Speaker Format",
+  description: "Standard editorial publication format for readable dialogue, chronological integrity, and clear speaker attribution.",
+  speakerFormat: "UPPERCASE speaker label followed by a colon (e.g., 'SPEAKER 1:', 'INTERVIEWER:') on a new paragraph.",
+  paragraphRules: "Natural paragraph breaks at topic shifts or conversational pauses (under 120 words per paragraph). No single giant blocks.",
+  punctuationRules: "Ensure terminal punctuation on all sentences (. ! ?). Use em-dashes (—) for speech interruptions and ellipsis (...) for trailing thoughts.",
+  uncertaintyMarkers: "Preserve [inaudible], [crosstalk], and [laughter] tags. Flag unresolved markers for human review.",
+  editorialNotes: "Clean verbatim polish: remove meaningless filler words (um, uh) while preserving intent and voice.",
+  checks: [
+    {
+      id: "check-speakers",
+      label: "Speaker Labeling Consistency",
+      description: "Verifies every speaker statement begins with a standardized uppercase label and colon.",
+      rule: "Standardized uppercase label followed by colon (e.g. SPEAKER 1:).",
+      category: "speaker",
+    },
+    {
+      id: "check-paragraphs",
+      label: "Paragraph Rhythm & Length",
+      description: "Checks that paragraphs are comfortably broken and avoid unbroken text blocks over 150 words.",
+      rule: "Paragraphs under 120 words with double line break between speaker turns.",
+      category: "structure",
+    },
+    {
+      id: "check-markers",
+      label: "Uncertainty & Marker Audit",
+      description: "Flags unresolved inaudible tags, crosstalk markers, or bracketed TODO notations.",
+      rule: "Review all [inaudible], [crosstalk], or bracketed questions.",
+      category: "verbatim",
+    },
+    {
+      id: "check-punctuation",
+      label: "Punctuation & Termination",
+      description: "Ensures every sentence and paragraph ends with proper punctuation (. ! ?).",
+      rule: "Terminal punctuation required at the end of each paragraph and statement.",
+      category: "punctuation",
+    },
+    {
+      id: "check-repetition",
+      label: "Repetition & Stutter Filter",
+      description: "Identifies accidental double words and speech stumbles without flattening intentional emphasis.",
+      rule: "No unintentional consecutive repeated words.",
+      category: "formatting",
+    },
+  ],
+};
+
+export const DEFAULT_TEMPLATES: WorkflowTemplate[] = [
+  {
+    id: "tpl-standard-editorial",
+    name: "Standard Editorial Dialogue",
+    description: "Balanced clean-read transcription for interviews, podcasts, and articles. Polished grammar with authentic voice preserved.",
+    category: "Editorial",
+    isDefault: true,
+    formatRules: `Use consistent uppercase speaker labels (e.g., SPEAKER 1:, INTERVIEWER:) followed by a colon and a space.
+Break into natural paragraphs at conversational pauses or topic shifts (maximum 120 words per paragraph).
+Keep chronological order. Do not insert synthetic headers or summarize content.`,
+    editRules: `Improve grammar, punctuation, and syntax while preserving the speaker's natural tone and intent.
+Remove meaningless fillers (um, uh, you know) unless they convey emphasis, hesitation, or meaning.
+Preserve proper names, specialized terminology, numerical figures, dates, and uncertainty markers.`,
+    masterPrompt: `You are a meticulous transcript editor working in controlled passes. Preserve meaning before style. Never invent a word that is not supported by the source, never merge speakers, and never silently resolve an uncertain phrase. Return only the requested transformation for the supplied batch.`,
+    outputGuide: DEFAULT_OUTPUT_GUIDE,
+  },
+  {
+    id: "tpl-clean-verbatim",
+    name: "Clean Verbatim & Legal Testimony",
+    description: "Exact word preservation with speaker attributions for legal, compliance, and academic research.",
+    category: "Legal & Compliance",
+    formatRules: `Identify every speaker by explicit label: Q: / A: or WITNESS: / COUNSEL:.
+Every speaker utterance starts on a fresh paragraph.
+Preserve exact timestamps or sequence markers if present in the source.`,
+    editRules: `Maintain high verbatim fidelity. Do NOT paraphrase or reorder sentences.
+Remove only accidental stuttered words (e.g., 'I- I went') unless relevant to testimony.
+Never omit words, names, legal terminology, or hesitation markers.`,
+    masterPrompt: `You are a legal transcription specialist. Accuracy and verbatim fidelity are paramount. Do not summarize, extrapolate, or alter witness or speaker statements.`,
+    outputGuide: {
+      title: "Legal & Compliance Verbatim Standards",
+      description: "Strict attribution and sentence integrity verification for official proceedings.",
+      speakerFormat: "Formal speaker tags (e.g. 'MR. JOHNSON:', 'THE COURT:', 'Q:', 'A:').",
+      paragraphRules: "One speaker turn per paragraph. No merging of separate exchanges.",
+      punctuationRules: "Standard court-reporting punctuation. Quotation marks for cited testimony.",
+      uncertaintyMarkers: "Strict notation: [inaudible hh:mm:ss], [crosstalk], [unintelligible].",
+      editorialNotes: "Verbatim priority: preserve false starts that carry evidentiary value.",
+      checks: [
+        { id: "cv-speakers", label: "Speaker Turn Integrity", description: "Every speaker exchange has distinct attribution.", rule: "Explicit speaker tag for every utterance.", category: "speaker" },
+        { id: "cv-inaudible", label: "Timestamped Marker Audit", description: "Audit all inaudible and crosstalk timestamps.", rule: "Verify [inaudible hh:mm:ss] format.", category: "verbatim" },
+        { id: "cv-fidelity", label: "Verbatim Preservation", description: "Zero paraphrasing or word substitution.", rule: "Retain exact testimony diction.", category: "verbatim" },
+        { id: "cv-punct", label: "Standard Punctuation", description: "Precise sentence boundaries.", rule: "Standard legal transcription punctuation.", category: "punctuation" },
+      ],
+    },
+  },
+  {
+    id: "tpl-executive-briefing",
+    name: "Executive Meeting & Minutes",
+    description: "Structured business meeting transcript with clear speaker ownership, discussions, and decisions.",
+    category: "Business",
+    formatRules: `Label participants by Full Name or Role (e.g. SARAH (CEO):, DAVID (PRODUCT):).
+Organize discussion blocks with clear paragraph spacing.
+Retain chronological order of discussion items.`,
+    editRules: `Tighten conversational sprawl while retaining every key decision, metric, deadline, and assigned action.
+Clean up colloquial rambling while preserving the exact technical and business facts.`,
+    masterPrompt: `You are an executive editor creating a pristine corporate transcript record. Focus on accuracy of commitments, figures, and technical points.`,
+    outputGuide: {
+      title: "Executive Transcript & Meeting Standards",
+      description: "Crisp, professional record for corporate archives and stakeholder review.",
+      speakerFormat: "NAME (ROLE): followed by statement.",
+      paragraphRules: "Concise paragraph units grouped by discussion point.",
+      punctuationRules: "Clean professional business punctuation.",
+      uncertaintyMarkers: "Mark unclear terms with [phonetic: term] or [unclear].",
+      editorialNotes: "Highlight clarity and quantitative accuracy.",
+      checks: [
+        { id: "exec-speakers", label: "Participant Attribution", description: "Names and roles accurately attached.", rule: "Consistent NAME (ROLE): format.", category: "speaker" },
+        { id: "exec-metrics", label: "Figures & Numbers Check", description: "Metrics, dates, and currency retained accurately.", rule: "No alteration of numbers or dates.", category: "verbatim" },
+        { id: "exec-clarity", label: "Action Item Clarity", description: "Decisions and statements are unambiguous.", rule: "Concise business phrasing.", category: "structure" },
+      ],
+    },
+  },
+  {
+    id: "tpl-podcast-media",
+    name: "Podcast & Media Broadcast",
+    description: "Dynamic conversational flow designed for show notes, captions, and article syndication.",
+    category: "Media & Audio",
+    formatRules: `Use HOST: and GUEST: or presenter names.
+Insert paragraph breaks at punchlines, topic transitions, and conversational beats.
+Preserve conversational humor and tone.`,
+    editRules: `Keep the conversational energy lively while eliminating awkward mid-sentence hesitations.
+Ensure proper spelling of cultural references, brand names, and guest bios.`,
+    masterPrompt: `You are a broadcast podcast editor. Maintain the entertaining flow and conversational warmth of the dialogue without clumsy speech artifacts.`,
+    outputGuide: {
+      title: "Broadcast & Audio Publication Guide",
+      description: "Optimized for listener engagement, captions, and article publication.",
+      speakerFormat: "HOST: and GUEST: in bold/caps on speaker change.",
+      paragraphRules: "Brisk, digestible paragraphs (3-4 sentences max).",
+      punctuationRules: "Expressive punctuation capturing conversational tone.",
+      uncertaintyMarkers: "Note [laughter], [applause], [music] when audio context requires.",
+      editorialNotes: "Maintain voice cadence and punchy delivery.",
+      checks: [
+        { id: "pod-speakers", label: "Host/Guest Continuity", description: "Clean speaker alternation.", rule: "Proper HOST / GUEST labeling.", category: "speaker" },
+        { id: "pod-rhythm", label: "Paragraph Flow", description: "Punchy breaks for easy skimming.", rule: "Max 3-4 sentences per paragraph.", category: "structure" },
+        { id: "pod-audio-cues", label: "Audio Cue Audit", description: "Validate atmospheric brackets [laughter], [music].", rule: "Preserve narrative sound tags.", category: "formatting" },
+      ],
+    },
+  },
 ];
 
 export const DEFAULT_CONFIG: WorkflowConfig = {
@@ -68,18 +255,16 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
   description: "",
   transcript: "",
   sourceFileName: "",
-  formatRules: `Use consistent speaker labels and natural paragraph breaks.
-Keep the source chronological. Do not summarize or add headings that are not present in the source.`,
-  editRules: `Improve grammar and remove accidental repetition without flattening the speaker's voice.
-Remove filler only when it does not carry meaning.
-Preserve names, numbers, dates, claims, uncertainty markers, and speaker intent.`,
-  masterPrompt: `You are a meticulous transcript editor working in controlled passes. Preserve meaning before style. Never invent a word that is not supported by the source, never merge speakers, and never silently resolve an uncertain phrase. Return only the requested transformation for the supplied batch.`,
-  primaryModel: "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-  fallbackModels: ["nvidia/llama-3.1-nemotron-nano-vl-8b-v1", "meta/llama-3.1-70b-instruct"],
+  formatRules: DEFAULT_TEMPLATES[0].formatRules,
+  editRules: DEFAULT_TEMPLATES[0].editRules,
+  masterPrompt: DEFAULT_TEMPLATES[0].masterPrompt,
+  outputGuide: DEFAULT_OUTPUT_GUIDE,
+  primaryModel: "meta/llama-3.1-8b-instruct",
+  fallbackModels: ["meta/llama-3.2-3b-instruct", "nvidia/llama-3.1-nemotron-70b-instruct"],
   contextWindow: 32768,
-  batchTokens: 4500,
-  overlapTokens: 180,
-  maxOutputTokens: 4000,
+  batchTokens: 2000,
+  overlapTokens: 120,
+  maxOutputTokens: 2000,
   temperature: 0.2,
 };
 
@@ -100,8 +285,43 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+export function normalizeOutputGuide(value: unknown): OutputGuide {
+  if (!value || typeof value !== "object") return { ...DEFAULT_OUTPUT_GUIDE, checks: [...DEFAULT_OUTPUT_GUIDE.checks] };
+  const candidate = value as Partial<OutputGuide>;
+  const checks = Array.isArray(candidate.checks)
+    ? candidate.checks
+        .filter((c): c is OutputGuideCheck => Boolean(c && typeof c === "object" && typeof c.label === "string"))
+        .map((c) => ({
+          id: typeof c.id === "string" ? c.id : makeId(),
+          label: typeof c.label === "string" ? c.label : "Quality Check",
+          description: typeof c.description === "string" ? c.description : "",
+          rule: typeof c.rule === "string" ? c.rule : "",
+          category: (["speaker", "structure", "punctuation", "verbatim", "formatting"].includes(c.category as string)
+            ? c.category
+            : "structure") as OutputGuideCheck["category"],
+        }))
+    : [...DEFAULT_OUTPUT_GUIDE.checks];
+
+  return {
+    title: typeof candidate.title === "string" && candidate.title.trim() ? candidate.title : DEFAULT_OUTPUT_GUIDE.title,
+    description: typeof candidate.description === "string" ? candidate.description : DEFAULT_OUTPUT_GUIDE.description,
+    speakerFormat: typeof candidate.speakerFormat === "string" && candidate.speakerFormat.trim() ? candidate.speakerFormat : DEFAULT_OUTPUT_GUIDE.speakerFormat,
+    paragraphRules: typeof candidate.paragraphRules === "string" && candidate.paragraphRules.trim() ? candidate.paragraphRules : DEFAULT_OUTPUT_GUIDE.paragraphRules,
+    punctuationRules: typeof candidate.punctuationRules === "string" && candidate.punctuationRules.trim() ? candidate.punctuationRules : DEFAULT_OUTPUT_GUIDE.punctuationRules,
+    uncertaintyMarkers: typeof candidate.uncertaintyMarkers === "string" && candidate.uncertaintyMarkers.trim() ? candidate.uncertaintyMarkers : DEFAULT_OUTPUT_GUIDE.uncertaintyMarkers,
+    editorialNotes: typeof candidate.editorialNotes === "string" ? candidate.editorialNotes : DEFAULT_OUTPUT_GUIDE.editorialNotes,
+    checks: checks.length ? checks : [...DEFAULT_OUTPUT_GUIDE.checks],
+  };
+}
+
 export function normalizeConfig(value: unknown): WorkflowConfig {
-  if (!value || typeof value !== "object") return { ...DEFAULT_CONFIG, fallbackModels: [...DEFAULT_CONFIG.fallbackModels] };
+  if (!value || typeof value !== "object") {
+    return {
+      ...DEFAULT_CONFIG,
+      outputGuide: { ...DEFAULT_OUTPUT_GUIDE, checks: [...DEFAULT_OUTPUT_GUIDE.checks] },
+      fallbackModels: [...DEFAULT_CONFIG.fallbackModels],
+    };
+  }
   const candidate = value as Partial<WorkflowConfig>;
   const fallbackModels = Array.isArray(candidate.fallbackModels)
     ? candidate.fallbackModels.filter((model): model is string => typeof model === "string").slice(0, MAX_ALTERNATIVES)
@@ -111,11 +331,13 @@ export function normalizeConfig(value: unknown): WorkflowConfig {
     ...candidate,
     name: typeof candidate.name === "string" ? candidate.name : DEFAULT_CONFIG.name,
     description: typeof candidate.description === "string" ? candidate.description : DEFAULT_CONFIG.description,
+    templateId: typeof candidate.templateId === "string" ? candidate.templateId : undefined,
     transcript: typeof candidate.transcript === "string" ? candidate.transcript : DEFAULT_CONFIG.transcript,
     sourceFileName: typeof candidate.sourceFileName === "string" ? candidate.sourceFileName : DEFAULT_CONFIG.sourceFileName,
     formatRules: typeof candidate.formatRules === "string" ? candidate.formatRules : DEFAULT_CONFIG.formatRules,
     editRules: typeof candidate.editRules === "string" ? candidate.editRules : DEFAULT_CONFIG.editRules,
     masterPrompt: typeof candidate.masterPrompt === "string" ? candidate.masterPrompt : DEFAULT_CONFIG.masterPrompt,
+    outputGuide: normalizeOutputGuide(candidate.outputGuide),
     primaryModel: typeof candidate.primaryModel === "string" ? candidate.primaryModel : DEFAULT_CONFIG.primaryModel,
     fallbackModels,
     contextWindow: Number(candidate.contextWindow) || DEFAULT_CONFIG.contextWindow,
@@ -199,6 +421,187 @@ export function sectionChecks(text: string): SectionCheck[] {
       flags,
     };
   });
+}
+
+export type GuideAuditReport = {
+  checkId: string;
+  label: string;
+  status: "pass" | "review";
+  score: number;
+  message: string;
+  count: number;
+  samples: string[];
+};
+
+export function auditOutputAgainstGuide(text: string, guide: OutputGuide): {
+  overallScore: number;
+  passedCount: number;
+  reviewCount: number;
+  reports: GuideAuditReport[];
+} {
+  const clean = (text || "").trim();
+  if (!clean) {
+    return {
+      overallScore: 0,
+      passedCount: 0,
+      reviewCount: guide.checks.length,
+      reports: guide.checks.map((c) => ({
+        checkId: c.id,
+        label: c.label,
+        status: "review",
+        score: 0,
+        message: "No output generated yet.",
+        count: 0,
+        samples: [],
+      })),
+    };
+  }
+
+  const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const reports: GuideAuditReport[] = [];
+
+  for (const check of guide.checks) {
+    if (check.category === "speaker") {
+      // Check speaker labels
+      const speakerPattern = /^([A-Z0-9 _-]{1,30})\s*:/;
+      const unlabelled = paragraphs.filter((p) => !speakerPattern.test(p));
+      const hasLabels = paragraphs.some((p) => speakerPattern.test(p));
+      if (!hasLabels && paragraphs.length > 1) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "review",
+          score: 60,
+          message: "No explicit speaker labels detected. Output guide recommends formatted speaker tags (e.g. SPEAKER:).",
+          count: paragraphs.length,
+          samples: paragraphs.slice(0, 2),
+        });
+      } else if (unlabelled.length > 0 && hasLabels) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: unlabelled.length <= 2 ? "pass" : "review",
+          score: Math.max(50, 100 - unlabelled.length * 15),
+          message: `${unlabelled.length} paragraph(s) lack speaker tags. Check if they belong to preceding speaker.`,
+          count: unlabelled.length,
+          samples: unlabelled.slice(0, 2),
+        });
+      } else {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "pass",
+          score: 100,
+          message: "Speaker attribution format is consistent across dialogue paragraphs.",
+          count: 0,
+          samples: [],
+        });
+      }
+    } else if (check.category === "structure") {
+      // Check paragraph length
+      const longParas = paragraphs.filter((p) => p.split(/\s+/).length > 150);
+      if (longParas.length > 0) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "review",
+          score: Math.max(40, 100 - longParas.length * 20),
+          message: `${longParas.length} paragraph(s) exceed 150 words. Guide suggests breaks under 120 words.`,
+          count: longParas.length,
+          samples: longParas.slice(0, 2).map((p) => p.slice(0, 100) + "…"),
+        });
+      } else {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "pass",
+          score: 100,
+          message: "Paragraph length and structure comply with reading rhythm specifications.",
+          count: 0,
+          samples: [],
+        });
+      }
+    } else if (check.category === "verbatim") {
+      // Check unresolved markers
+      const markerMatches = clean.match(/\[(?:inaudible|crosstalk|unintelligible|unknown)[^\]]*\]|\bTODO\b|\?{3,}/gi) || [];
+      if (markerMatches.length > 0) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "review",
+          score: Math.max(50, 100 - markerMatches.length * 15),
+          message: `${markerMatches.length} uncertainty marker(s) found. Verify if human audio review is needed.`,
+          count: markerMatches.length,
+          samples: Array.from(new Set(markerMatches)).slice(0, 4),
+        });
+      } else {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "pass",
+          score: 100,
+          message: "No unresolved inaudible or TODO markers detected.",
+          count: 0,
+          samples: [],
+        });
+      }
+    } else if (check.category === "punctuation") {
+      // Check terminal punctuation
+      const unpunctuated = paragraphs.filter((p) => !/[.!?…"')\]]$/.test(p));
+      if (unpunctuated.length > 0) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "review",
+          score: Math.max(50, 100 - unpunctuated.length * 20),
+          message: `${unpunctuated.length} paragraph(s) lack terminal punctuation (. ! ?).`,
+          count: unpunctuated.length,
+          samples: unpunctuated.slice(0, 2).map((p) => p.slice(-40)),
+        });
+      } else {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "pass",
+          score: 100,
+          message: "Terminal punctuation complies with editorial requirements.",
+          count: 0,
+          samples: [],
+        });
+      }
+    } else {
+      // Repeated words / stutters
+      const repeats = clean.match(/\b([A-Za-z]+)\s+\1\b/gi) || [];
+      if (repeats.length > 0) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "review",
+          score: Math.max(50, 100 - repeats.length * 18),
+          message: `${repeats.length} consecutive duplicate word(s) identified.`,
+          count: repeats.length,
+          samples: Array.from(new Set(repeats)).slice(0, 3),
+        });
+      } else {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: "pass",
+          score: 100,
+          message: "Clean repetition and stutter filter passed.",
+          count: 0,
+          samples: [],
+        });
+      }
+    }
+  }
+
+  const passedCount = reports.filter((r) => r.status === "pass").length;
+  const reviewCount = reports.filter((r) => r.status === "review").length;
+  const totalScore = reports.reduce((acc, r) => acc + r.score, 0);
+  const overallScore = Math.round(totalScore / Math.max(1, reports.length));
+
+  return { overallScore, passedCount, reviewCount, reports };
 }
 
 export function slugify(value: string) {

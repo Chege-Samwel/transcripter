@@ -22,6 +22,7 @@ export type IconName =
   | "lock"
   | "history"
   | "users"
+  | "book"
   | "pause";
 
 export default function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
@@ -50,6 +51,7 @@ export default function Icon({ name, size = 18 }: { name: IconName; size?: numbe
   if (name === "lock") return <svg {...common}><rect {...stroke} x="5" y="10" width="14" height="10" rx="2" /><path {...stroke} d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>;
   if (name === "history") return <svg {...common}><path {...stroke} d="M4 12a8 8 0 1 0 2.3-5.7L4 8" /><path {...stroke} d="M4 4v4h4M12 8v5l3 2" /></svg>;
   if (name === "users") return <svg {...common}><path {...stroke} d="M16 19v-1.2A3.8 3.8 0 0 0 12.2 14H7.8A3.8 3.8 0 0 0 4 17.8V19M10 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM20 19v-1.2A3.8 3.8 0 0 0 17 14.1M16 5.1a3 3 0 0 1 0 5.8" /></svg>;
+  if (name === "book") return <svg {...common}><path {...stroke} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path {...stroke} d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>;
   if (name === "pause") return <svg {...common}><path {...stroke} d="M8 6v12M16 6v12" /></svg>;
   return <svg {...common}><circle {...stroke} cx="12" cy="12" r="8" /></svg>;
 }

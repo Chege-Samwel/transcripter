@@ -26,6 +26,36 @@ export default function GuidingRules({
         <span className="field-description">The non-negotiable instruction prepended to every pass.</span>
         <textarea className="master-control" value={config.masterPrompt} onChange={(event) => onChange("masterPrompt", event.target.value)} />
       </label>
+      {config.outputGuide && (
+        <>
+          <label>
+            Output Guide: Speaker format
+            <span className="field-description">Speaker tag specifications for final canvas rendering.</span>
+            <input
+              value={config.outputGuide.speakerFormat}
+              onChange={(e) =>
+                onChange("outputGuide", {
+                  ...config.outputGuide,
+                  speakerFormat: e.target.value,
+                })
+              }
+            />
+          </label>
+          <label>
+            Output Guide: Paragraph rules
+            <span className="field-description">Paragraph bounds and conversational pause breaks.</span>
+            <input
+              value={config.outputGuide.paragraphRules}
+              onChange={(e) =>
+                onChange("outputGuide", {
+                  ...config.outputGuide,
+                  paragraphRules: e.target.value,
+                })
+              }
+            />
+          </label>
+        </>
+      )}
     </div>
   );
 }

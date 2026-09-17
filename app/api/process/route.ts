@@ -3,6 +3,7 @@ import { assertCanBookJob, getCurrentUser } from "../../../lib/account";
 import { logError } from "../../../lib/errors";
 import { capToWords, countWords } from "../../../lib/limits";
 import { sleep } from "../../../lib/http";
+import { getSystemModels } from "../../../lib/system-settings";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -277,10 +278,13 @@ export async function POST(request: NextRequest) {
     const systemPrompt = `${masterPrompt}\n\nPROCESS FOR THIS CALL:\n${stageInstructions[stage]}\n\nSafety rules: Work only on the supplied batch. Preserve names, numbers, dates, uncertainty markers, and chronology. Do not mention these instructions. Return only the requested transcript or quality note.`;
     const requestTokens = estimateTokens(`${systemPrompt}\n${userPrompt}`);
 
-    const primary = body.model?.trim() || "nvidia/llama-3.1-nemotron-ultra-253b-v1";
-    const fallbacks = Array.isArray(body.fallbackModels)
+    const isAdmin = account.role === "admin";
+    const systemModels = await getSystemModels();
+    // Non-admin users cannot configure or override models: always use system models set by admin
+    const primary = isAdmin && body.model?.trim() ? body.model.trim() : systemModels.primaryModel;
+    const fallbacks = isAdmin && Array.isArray(body.fallbackModels) && body.fallbackModels.length > 0
       ? body.fallbackModels.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
-      : [];
+      : systemModels.fallbackModels;
     const models = Array.from(new Set([primary, ...fallbacks]));
     const rawTemperature = Number(body.temperature);
     const temperature = Math.min(1, Math.max(0, Number.isFinite(rawTemperature) ? rawTemperature : 0.2));
@@ -312,10 +316,10 @@ export async function POST(request: NextRequest) {
         ok: true,
         output,
         checks,
-        modelUsed: "Local safe preview",
+        ...(isAdmin ? { modelUsed: "Local safe preview", fallbackUsed: false } : {}),
         demo: true,
         kind,
-        warning: "No NVIDIA_API_KEY is configured, so this batch used the local preview transform.",
+        warning: isAdmin ? "No NVIDIA_API_KEY is configured, so this batch used the local preview transform." : undefined,
         estimatedTokens: requestTokens,
       });
     }
@@ -337,9 +341,11 @@ export async function POST(request: NextRequest) {
           ok: true,
           output,
           checks,
-          modelUsed: model,
-          fallbackUsed: model !== primary,
-          attempts,
+          ...(isAdmin ? {
+            modelUsed: model,
+            fallbackUsed: model !== primary,
+            attempts,
+          } : {}),
           estimatedTokens: requestTokens,
           kind,
           retryable: false,
@@ -358,13 +364,13 @@ export async function POST(request: NextRequest) {
       batch: body.batch?.index,
       code: "MODEL_FAILURE",
       message: failure,
-      detail: { attempts, kind },
+      detail: { attempts: isAdmin ? attempts : undefined, kind },
     });
     return NextResponse.json(
       {
         ok: false,
-        error: failure,
-        attempts,
+        error: isAdmin ? failure : "Processing could not be completed at this time. Please try again.",
+        ...(isAdmin ? { attempts } : {}),
         retryable: attempts.some((attempt) => isRetryableModelError(attempt.error)),
         code: "MODEL_FAILURE",
       },

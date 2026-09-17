@@ -16,15 +16,18 @@ import { createJobRecord, emptyStages, jobTitleFromSource, parseJobRecord, type 
 import {
   chunkTranscript,
   DEFAULT_CONFIG,
+  DEFAULT_TEMPLATES,
   estimateTokens,
   formatNumber,
   makeId,
   normalizeConfig,
+  normalizeOutputGuide,
   PIPELINE,
   sectionChecks,
   shortModel,
   slugify,
   type WorkflowConfig,
+  type WorkflowTemplate,
 } from "../../lib/workflow";
 
 type Notice = { tone: "success" | "error" | "info"; message: string };
@@ -48,6 +51,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const [config, setConfig] = useState<WorkflowConfig>({ ...DEFAULT_CONFIG, fallbackModels: [...DEFAULT_CONFIG.fallbackModels] });
   const [kind, setKind] = useState<JobKind>(account.canBookJob ? "job" : "demo");
   const [job, setJob] = useState<JobRecord | null>(null);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>(DEFAULT_TEMPLATES);
   const [hydrated, setHydrated] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [refineInstruction, setRefineInstruction] = useState("");
@@ -115,8 +119,14 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     async function load() {
       let defaults = normalizeConfig(DEFAULT_CONFIG);
       try {
-        const { data } = await requestJson<{ workflow?: { config?: unknown } | null }>("/api/workflow");
-        if (data.workflow?.config) defaults = normalizeConfig(data.workflow.config);
+        const [wfRes, tplRes] = await Promise.all([
+          requestJson<{ workflow?: { config?: unknown } | null }>("/api/workflow"),
+          requestJson<{ templates?: WorkflowTemplate[] }>("/api/templates"),
+        ]);
+        if (wfRes.data.workflow?.config) defaults = normalizeConfig(wfRes.data.workflow.config);
+        if (Array.isArray(tplRes.data.templates) && tplRes.data.templates.length) {
+          setTemplates(tplRes.data.templates);
+        }
       } catch { /* defaults */ }
 
       if (jobId) {
@@ -183,13 +193,68 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   }, []);
 
   const readFile = useCallback(async (file: File) => {
-    const isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
-    if (!isZip) return { text: await file.text(), name: file.name };
+    let isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
+    if (!isZip) {
+      try {
+        const slice = await file.slice(0, 4).arrayBuffer();
+        const header = new Uint8Array(slice);
+        if (header[0] === 0x50 && header[1] === 0x4b && (header[2] === 0x03 || header[2] === 0x05 || header[2] === 0x07)) {
+          isZip = true;
+        }
+      } catch { /* normal text */ }
+    }
+
+    if (!isZip) {
+      const text = await file.text();
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.type === "transcripter-workflow-template" && parsed.template) {
+          return {
+            text: parsed.template.sampleInput || "",
+            name: file.name,
+            template: parsed.template as WorkflowTemplate,
+          };
+        }
+      } catch { /* not template json */ }
+      return { text, name: file.name, template: null };
+    }
+
     const zip = await JSZip.loadAsync(file);
     const names = Object.keys(zip.files);
-    const entryName = names.find((name) => !zip.files[name].dir && name.split("/").pop()?.toLowerCase() === "v.txt") || names.find((name) => !zip.files[name].dir && /\.(txt|md|markdown)$/i.test(name));
-    if (!entryName || !zip.file(entryName)) throw new Error("The ZIP must contain V.txt or a text/markdown file.");
-    return { text: await zip.file(entryName)!.async("text"), name: `${file.name} → ${entryName}` };
+    const entryName =
+      names.find((name) => !zip.files[name].dir && name.split("/").pop()?.toLowerCase() === "v.txt") ||
+      names.find((name) => !zip.files[name].dir && /^(source|transcript|input)\.(txt|md)$/i.test(name.split("/").pop() || "")) ||
+      names.find((name) => !zip.files[name].dir && /\.(txt|md|markdown)$/i.test(name) && !/(rules|guide|checks|output)/i.test(name)) ||
+      names.find((name) => !zip.files[name].dir && /\.(txt|md|markdown)$/i.test(name));
+
+    if (!entryName || !zip.file(entryName)) {
+      throw new Error("The ZIP must contain V.txt or a text/markdown file.");
+    }
+    const transcriptText = await zip.file(entryName)!.async("text");
+
+    let extractedTemplate: Partial<WorkflowTemplate> | null = null;
+    const jsonTemplateFile = names.find((n) => !zip.files[n].dir && /(template|workflow|rules|output_guide)\.json$/i.test(n));
+    if (jsonTemplateFile) {
+      try {
+        const rawJson = await zip.file(jsonTemplateFile)!.async("text");
+        const parsed = JSON.parse(rawJson);
+        extractedTemplate = parsed.template || parsed;
+      } catch { /* continue */ }
+    } else {
+      const rulesFile = names.find((n) => !zip.files[n].dir && /(rules|guide)\.txt$/i.test(n));
+      if (rulesFile) {
+        try {
+          const rulesText = await zip.file(rulesFile)!.async("text");
+          extractedTemplate = { formatRules: rulesText, editRules: rulesText };
+        } catch { /* continue */ }
+      }
+    }
+
+    return {
+      text: transcriptText,
+      name: `${file.name} → ${entryName}`,
+      template: extractedTemplate,
+    };
   }, []);
 
   const handleFile = useCallback(async (file?: File) => {
@@ -198,7 +263,15 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
       const loaded = await readFile(file);
       updateConfig("transcript", loaded.text);
       updateConfig("sourceFileName", loaded.name);
-      setNotice({ tone: "success", message: `${loaded.name} is loaded.` });
+      if (loaded.template) {
+        if (loaded.template.formatRules) updateConfig("formatRules", loaded.template.formatRules);
+        if (loaded.template.editRules) updateConfig("editRules", loaded.template.editRules);
+        if (loaded.template.masterPrompt) updateConfig("masterPrompt", loaded.template.masterPrompt);
+        if (loaded.template.outputGuide) updateConfig("outputGuide", normalizeOutputGuide(loaded.template.outputGuide));
+        setNotice({ tone: "success", message: `${loaded.name} is loaded and packaged template rules & output guide applied.` });
+      } else {
+        setNotice({ tone: "success", message: `${loaded.name} is loaded.` });
+      }
     } catch (caught) {
       setOverlayOpen(true);
       setOverlayBusy(false);
@@ -308,6 +381,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           setSummaryRight(stage.label);
           pushLog(`${stage.label} · batch ${batchIndex + 1}`, "running");
 
+          const isAdmin = account.role === "admin";
           const { ok, data } = await requestJson<{
             ok?: boolean;
             output?: string;
@@ -327,8 +401,10 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 masterPrompt: config.masterPrompt,
                 formatRules: config.formatRules,
                 editRules: config.editRules,
-                model: config.primaryModel,
-                fallbackModels: config.fallbackModels,
+                ...(isAdmin ? {
+                  model: config.primaryModel,
+                  fallbackModels: config.fallbackModels,
+                } : {}),
                 contextWindow: config.contextWindow,
                 maxOutputTokens: config.maxOutputTokens,
                 temperature: config.temperature,
@@ -345,7 +421,9 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           );
 
           if (!ok || !data.output?.trim()) {
-            const attempts = data.attempts?.length ? ` ${data.attempts.map((attempt) => `${shortModel(attempt.model)}: ${attempt.error}`).join(" | ")}` : "";
+            const attempts = isAdmin && data.attempts?.length
+              ? ` ${data.attempts.map((attempt) => `${shortModel(attempt.model)}: ${attempt.error}`).join(" | ")}`
+              : "";
             const message = `${data.error || "This pass did not return an output."}${attempts}`;
             const event: ErrorEvent = {
               id: makeId(),
@@ -385,7 +463,11 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           if (stage.key === "normalize") workBatches[batchIndex].normalize = currentText;
           if (stage.key === "format") workBatches[batchIndex].format = currentText;
           if (stage.key === "edit") workBatches[batchIndex].edit = currentText;
-          pushLog(data.warning || `${stage.label} complete`, "success", data.modelUsed ? shortModel(data.modelUsed) : undefined);
+          pushLog(
+            data.warning || `${stage.label} complete`,
+            "success",
+            isAdmin && data.modelUsed ? shortModel(data.modelUsed) : undefined
+          );
           currentJob = {
             ...currentJob,
             batches: workBatches.map((batch) => ({ ...batch })),
@@ -472,6 +554,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     setOverlaySubtitle("A refine pass uses the current edited transcript plus your instruction.");
     setOverlayPercent(35);
     pushLog("Refine pass started", "running");
+    const isAdmin = account.role === "admin";
     const { ok, data } = await requestJson<{ output?: string; error?: string; retryable?: boolean; modelUsed?: string }>(
       "/api/process",
       {
@@ -483,8 +566,10 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           formatRules: config.formatRules,
           editRules: `${config.editRules}\n\nRequested changes:\n${refineInstruction}`,
           refineInstruction,
-          model: config.primaryModel,
-          fallbackModels: config.fallbackModels,
+          ...(isAdmin ? {
+            model: config.primaryModel,
+            fallbackModels: config.fallbackModels,
+          } : {}),
           contextWindow: config.contextWindow,
           maxOutputTokens: config.maxOutputTokens,
           temperature: config.temperature,
@@ -511,7 +596,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     setOverlayPercent(100);
     setOverlayBusy(false);
     setOverlayTitle("Requested changes applied");
-    pushLog("Refine complete", "success", data.modelUsed ? shortModel(data.modelUsed) : undefined);
+    pushLog("Refine complete", "success", isAdmin && data.modelUsed ? shortModel(data.modelUsed) : undefined);
     setNotice({ tone: "success", message: "The refined version is on the canvas." });
   }, [config, kind, persist, pushLog, refineInstruction]);
 
@@ -662,14 +747,49 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           </div>
           <aside className="intake-side">
             <div className="card direction-card">
-              <div className="card-topline"><p className="overline">GUIDING RULES</p><Icon name="edit" size={17} /></div>
-              <h3>{config.name}</h3>
-              <p>{config.description || "Saved rules shape each pass. Adjust them here for this transcript, or change workspace defaults in Guiding rules."}</p>
+              <div className="card-topline">
+                <p className="overline">WORKFLOW TEMPLATE</p>
+                <Icon name="edit" size={17} />
+              </div>
+              <select
+                value={config.templateId || templates[0]?.id || ""}
+                onChange={(e) => {
+                  const selected = templates.find((t) => t.id === e.target.value);
+                  if (selected) {
+                    updateConfig("templateId", selected.id);
+                    updateConfig("name", selected.name);
+                    updateConfig("formatRules", selected.formatRules);
+                    updateConfig("editRules", selected.editRules);
+                    updateConfig("masterPrompt", selected.masterPrompt);
+                    updateConfig("outputGuide", normalizeOutputGuide(selected.outputGuide));
+                    setNotice({ tone: "success", message: `Template "${selected.name}" applied.` });
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  margin: "8px 0 10px",
+                  padding: "6px 10px",
+                  border: "1px solid var(--line)",
+                  borderRadius: "6px",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  background: "var(--paper)",
+                  color: "var(--ink)",
+                }}
+                aria-label="Select workflow template"
+              >
+                {templates.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.name} ({tpl.category})
+                  </option>
+                ))}
+              </select>
+              <p>{config.description || config.outputGuide?.description || "Saved rules and output guide shape each pass."}</p>
               <button type="button" className="card-link" onClick={() => setRulesOpen((open) => !open)}>
-                {rulesOpen ? "Hide rules" : "Adjust rules"} <Icon name="chevron" size={14} />
+                {rulesOpen ? "Hide rules & guide" : "Adjust rules & guide"} <Icon name="chevron" size={14} />
               </button>
               {rulesOpen && <GuidingRules config={config} onChange={updateConfig} />}
-              <Link href="/settings" className="card-link">Workspace defaults <Icon name="arrow" size={14} /></Link>
+              <Link href="/settings" className="card-link">Manage templates &amp; Output Guide <Icon name="arrow" size={14} /></Link>
             </div>
             <div className="run-panel">
               <div className="run-panel-icon"><Icon name="play" size={18} /></div>

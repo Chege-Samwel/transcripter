@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 0.0.0.0",
     "lint": "next lint",
+    "test": "node scripts/test-e2e.mjs && node scripts/test-retry.mjs",
     "db:generate": "node scripts/generate-migrations.mjs",
     "db:migrate": "node scripts/migrate.mjs",
     "db:serve": "node scripts/serve-local-db.mjs",

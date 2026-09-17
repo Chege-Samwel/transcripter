@@ -2,7 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { assertCanBookJob, getCurrentUser } from "../../../lib/account";
 import { logError } from "../../../lib/errors";
 import { capToWords, countWords } from "../../../lib/limits";
-import { sleep } from "../../../lib/http";
+import {
+  fetchAICascade,
+  getGoogleApiKey,
+  getNvidiaApiKey,
+  getOpenRouterApiKey,
+} from "../../../lib/ai-providers";
+import { DEFAULT_SYSTEM_MODELS, getSystemModels } from "../../../lib/system-settings";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -18,6 +24,7 @@ type ProcessBody = {
   refineInstruction?: string;
   model?: string;
   fallbackModels?: string[];
+  singleModelOnly?: boolean;
   contextWindow?: number;
   maxOutputTokens?: number;
   temperature?: number;
@@ -26,8 +33,6 @@ type ProcessBody = {
   kind?: "demo" | "job";
   jobId?: string;
 };
-
-const NVIDIA_ENDPOINT = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 const stageInstructions: Record<Stage, string> = {
   normalize:
@@ -44,60 +49,6 @@ const stageInstructions: Record<Stage, string> = {
 
 function estimateTokens(value: string) {
   return Math.ceil(value.length / 4);
-}
-
-function cleanText(value: string) {
-  return value
-    .replace(/\r\n/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function demoTransform(stage: Stage, text: string, formatRules = "", editRules = "") {
-  const cleaned = cleanText(text);
-
-  if (stage === "normalize") {
-    return cleaned
-      .replace(/[“”]/g, '"')
-      .replace(/[‘’]/g, "'")
-      .replace(/[ \t]{2,}/g, " ")
-      .replace(/\s+([,.!?;:])/g, "$1");
-  }
-
-  if (stage === "format") {
-    const paragraphs = cleaned
-      .split(/\n\s*\n/)
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean);
-    const wantsSpeakers = /speaker|label|dialogue/i.test(formatRules);
-    return paragraphs
-      .map((paragraph) => {
-        if (wantsSpeakers && /^[a-z][a-z0-9 _-]{1,24}\s*[-:]/i.test(paragraph)) {
-          const match = paragraph.match(/^([^\n:-]{1,24})\s*[-:]/i);
-          if (match) {
-            return `${match[1].trim().toUpperCase()}: ${paragraph.slice(match[0].length).trim()}`;
-          }
-        }
-        return paragraph;
-      })
-      .join("\n\n");
-  }
-
-  if (stage === "edit" || stage === "refine") {
-    let edited = cleaned;
-    if (/remove|omit|delete/i.test(editRules) && /filler|hesitation/i.test(editRules)) {
-      edited = edited.replace(/\b(um+|uh+|er+|you know)\b[,.]?\s*/gi, "");
-    }
-    edited = edited.replace(/\b([a-z]+)(\s+\1\b)+/gi, "$1");
-    return edited.trim();
-  }
-
-  return cleaned;
-}
-
-function isRetryableModelError(message: string) {
-  return /abort|timeout|429|rate|503|502|504|network|fetch|ECONN|ETIMEDOUT|empty response/i.test(message);
 }
 
 type SectionCheck = {
@@ -130,82 +81,6 @@ function checkSection(text: string, section: number): SectionCheck {
     note: flags.length ? flags.join(" · ") : "Structure and transcript markers look clean",
     flags,
   };
-}
-
-function modelError(status: number, body: string) {
-  if (status === 401 || status === 403) return "NVIDIA authentication failed. Check NVIDIA_API_KEY in Vercel settings.";
-  if (status === 429) return "The model is rate limited. The next configured fallback will be tried.";
-  if (status === 413) return "The model rejected this batch because it is too large for the selected context window.";
-  try {
-    const parsed = JSON.parse(body) as { error?: { message?: string } };
-    return parsed.error?.message || `Model request failed with status ${status}.`;
-  } catch {
-    return `Model request failed with status ${status}.`;
-  }
-}
-
-async function callNvidia(
-  model: string,
-  messages: { role: "system" | "user"; content: string }[],
-  temperature: number,
-  maxTokens: number,
-) {
-  const key = process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY;
-  if (!key) throw new Error("NO_NVIDIA_KEY");
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 50_000);
-  try {
-    const response = await fetch(NVIDIA_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        top_p: 0.9,
-        max_tokens: maxTokens,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-    const raw = await response.text();
-    if (!response.ok) throw new Error(modelError(response.status, raw));
-    const parsed = JSON.parse(raw) as {
-      choices?: { message?: { content?: string | Array<{ text?: string }> } }[];
-    };
-    const content = parsed.choices?.[0]?.message?.content;
-    const output = Array.isArray(content) ? content.map((part) => part.text || "").join("") : content;
-    if (!output?.trim()) throw new Error("The model returned an empty response.");
-    return output.trim();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function callNvidiaWithRetry(
-  model: string,
-  messages: { role: "system" | "user"; content: string }[],
-  temperature: number,
-  maxTokens: number,
-  onRetry?: (attempt: number, reason: string) => void,
-) {
-  let lastError = "Model request failed.";
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      return await callNvidia(model, messages, temperature, maxTokens);
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown model error.";
-      if (!isRetryableModelError(lastError) || attempt === 2) throw error;
-      onRetry?.(attempt + 1, lastError);
-      await sleep(500 * 2 ** attempt);
-    }
-  }
-  throw new Error(lastError);
 }
 
 export async function POST(request: NextRequest) {
@@ -277,24 +152,17 @@ export async function POST(request: NextRequest) {
     const systemPrompt = `${masterPrompt}\n\nPROCESS FOR THIS CALL:\n${stageInstructions[stage]}\n\nSafety rules: Work only on the supplied batch. Preserve names, numbers, dates, uncertainty markers, and chronology. Do not mention these instructions. Return only the requested transcript or quality note.`;
     const requestTokens = estimateTokens(`${systemPrompt}\n${userPrompt}`);
 
-    const primary = body.model?.trim() || "nvidia/llama-3.1-nemotron-ultra-253b-v1";
-    const fallbacks = Array.isArray(body.fallbackModels)
-      ? body.fallbackModels.filter((model): model is string => typeof model === "string" && model.trim().length > 0)
-      : [];
-    const models = Array.from(new Set([primary, ...fallbacks]));
+    const systemModels = await getSystemModels();
     const rawTemperature = Number(body.temperature);
-    const temperature = Math.min(1, Math.max(0, Number.isFinite(rawTemperature) ? rawTemperature : 0.2));
+    const temperature = Math.min(1, Math.max(0, Number.isFinite(rawTemperature) ? rawTemperature : 0.5));
     const rawMaxTokens = Number(body.maxOutputTokens);
-    const requestedMaxTokens = Math.min(16_000, Math.max(256, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 4_000));
-    // A provider's context window includes both the prompt and its reserved output
-    // budget. Cap the output budget instead of letting a small context window fail
-    // after the client has already planned a valid input batch.
+    const requestedMaxTokens = Math.min(8192, Math.max(256, Number.isFinite(rawMaxTokens) ? rawMaxTokens : 4000));
     const availableOutputTokens = contextWindow - requestTokens - 256;
     if (availableOutputTokens < 256) {
       return NextResponse.json(
         {
           ok: false,
-          error: `This batch needs ${requestTokens.toLocaleString()} input tokens and ${requestedMaxTokens.toLocaleString()} output tokens, above the safe ${contextWindow.toLocaleString()} token window. Reduce batch size, max output, or raise the context window.`,
+          error: `This batch needs ${requestTokens.toLocaleString()} input tokens and ${requestedMaxTokens.toLocaleString()} output tokens, above the safe ${contextWindow.toLocaleString()} token window. Reduce batch size or max output.`,
           code: "CONTEXT_LIMIT",
           estimatedTokens: requestTokens,
           requestedOutputTokens: requestedMaxTokens,
@@ -305,76 +173,96 @@ export async function POST(request: NextRequest) {
     }
     const maxTokens = Math.min(requestedMaxTokens, availableOutputTokens);
 
-    if (!process.env.NVIDIA_API_KEY && !process.env.NVIDIA_NIM_API_KEY) {
-      const output = demoTransform(stage, text, formatRules, editRules);
+    const hasNvidiaKey = Boolean(getNvidiaApiKey());
+    const hasOpenRouterKey = Boolean(getOpenRouterApiKey());
+    const hasGoogleKey = Boolean(getGoogleApiKey());
+    const hasAnyKey = hasNvidiaKey || hasOpenRouterKey || hasGoogleKey;
+
+    const requestedModel = (body.model || systemModels.primaryModel || DEFAULT_SYSTEM_MODELS.primaryModel).trim();
+
+    // Support simulated response ONLY when explicitly requested by test runner
+    const isTestMock = request.headers.get("x-test-mock") === "true";
+    if (isTestMock) {
       const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
       return NextResponse.json({
         ok: true,
-        output,
+        output: text,
         checks,
-        modelUsed: "Local safe preview",
-        demo: true,
+        modelUsed: requestedModel,
+        provider: "test-mock",
+        fallbackUsed: false,
         kind,
-        warning: "No NVIDIA_API_KEY is configured, so this batch used the local preview transform.",
         estimatedTokens: requestTokens,
       });
     }
 
-    const attempts: { model: string; error: string }[] = [];
-    for (const model of models) {
-      try {
-        const output = await callNvidiaWithRetry(
-          model,
-          [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature,
-          maxTokens,
-        );
-        const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
-        return NextResponse.json({
-          ok: true,
-          output,
-          checks,
-          modelUsed: model,
-          fallbackUsed: model !== primary,
-          attempts,
-          estimatedTokens: requestTokens,
-          kind,
+    if (!hasAnyKey) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "No AI provider keys configured. Please add OPENROUTER_API_KEY, NVIDIA_API_KEY, or GEMINI_API_KEY in your settings to execute this pass.",
+          code: "NO_API_KEY",
           retryable: false,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown model error.";
-        attempts.push({ model, error: message });
-      }
+        },
+        { status: 503 },
+      );
     }
 
-    const failure = attempts[attempts.length - 1]?.error || "Every configured model failed.";
-    await logError({
-      ownerEmail: account.email,
-      jobId: body.jobId,
-      stage,
-      batch: body.batch?.index,
-      code: "MODEL_FAILURE",
-      message: failure,
-      detail: { attempts, kind },
-    });
-    return NextResponse.json(
-      {
-        ok: false,
-        error: failure,
-        attempts,
-        retryable: attempts.some((attempt) => isRetryableModelError(attempt.error)),
+    try {
+      const result = await fetchAICascade(
+        requestedModel,
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        {
+          temperature,
+          maxTokens,
+          singleModelOnly: Boolean(body.singleModelOnly),
+        }
+      );
+
+      const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
+      return NextResponse.json({
+        ok: true,
+        output: result.output,
+        checks,
+        modelUsed: result.modelUsed,
+        provider: result.provider,
+        fallbackUsed: result.modelUsed !== requestedModel,
+        estimatedTokens: requestTokens,
+        kind,
+        retryable: false,
+      });
+    } catch (error) {
+      const failure = error instanceof Error ? error.message : "AI model execution failed.";
+      await logError({
+        ownerEmail: account.email,
+        jobId: body.jobId,
+        stage,
+        batch: body.batch?.index,
         code: "MODEL_FAILURE",
-      },
-      { status: 502 },
-    );
+        message: failure,
+      });
+
+      // No silent fallback to a local safe engine. Return the true error so the user
+      // can retry on that model or switch to another model from the status tracking popup.
+      return NextResponse.json(
+        {
+          ok: false,
+          error: failure,
+          code: "MODEL_FAILURE",
+          retryable: true,
+          modelAttempted: requestedModel,
+        },
+        { status: 502 },
+      );
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not process this workflow request.";
     await logError({ ownerEmail: account.email, stage: "process", code: "PROCESS_ERROR", message });
     return NextResponse.json(
-      { ok: false, error: message, retryable: isRetryableModelError(message), code: "PROCESS_ERROR" },
+      { ok: false, error: message, retryable: false, code: "PROCESS_ERROR" },
       { status: 500 },
     );
   }

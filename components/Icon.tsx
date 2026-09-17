@@ -22,11 +22,16 @@ export type IconName =
   | "lock"
   | "history"
   | "users"
-  | "pause";
+  | "book"
+  | "pause"
+  | "minimize"
+  | "maximize";
 
 export default function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", xmlns: "http://www.w3.org/2000/svg", "aria-hidden": true } as const;
   const stroke = { stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  if (name === "minimize") return <svg {...common}><path {...stroke} d="M5 12h14" /></svg>;
+  if (name === "maximize") return <svg {...common}><path {...stroke} d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" /></svg>;
   if (name === "edit") return <svg {...common}><path {...stroke} d="m4 16.5-.8 3.8 3.8-.8L18.7 7.8a2.7 2.7 0 0 0-3.8-3.8L4 16.5Z" /><path {...stroke} d="m13.5 5.5 5 5" /></svg>;
   if (name === "settings") return <svg {...common}><path {...stroke} d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" /><path {...stroke} d="m19.2 14.8.1.2a1.7 1.7 0 0 1-2.4 2.4l-.2-.1a1.7 1.7 0 0 0-2.9 1.2v.2a1.7 1.7 0 0 1-3.4 0v-.2a1.7 1.7 0 0 0-2.9-1.2l-.2.1a1.7 1.7 0 0 1-2.4-2.4l.1-.2A1.7 1.7 0 0 0 5.9 12a1.7 1.7 0 0 0-1.7-1.7 1.7 1.7 0 1 1 0-3.4h.2a1.7 1.7 0 0 0 1.5-2.7l-.1-.2a1.7 1.7 0 0 1 2.4-2.4l.2.1A1.7 1.7 0 0 0 11.1.5h.2a1.7 1.7 0 0 1 3.4 0v.2a1.7 1.7 0 0 0 2.9 1.2l.2-.1a1.7 1.7 0 0 1 2.4 2.4l-.1.2A1.7 1.7 0 0 0 21.6 7h.2a1.7 1.7 0 0 1 0 3.4h-.2a1.7 1.7 0 0 0-1.5 2.7l-.1.2Z" /></svg>;
   if (name === "logout") return <svg {...common}><path {...stroke} d="M10 4H5.5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1H10M15 16l4-4-4-4M19 12H9" /></svg>;
@@ -50,6 +55,7 @@ export default function Icon({ name, size = 18 }: { name: IconName; size?: numbe
   if (name === "lock") return <svg {...common}><rect {...stroke} x="5" y="10" width="14" height="10" rx="2" /><path {...stroke} d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>;
   if (name === "history") return <svg {...common}><path {...stroke} d="M4 12a8 8 0 1 0 2.3-5.7L4 8" /><path {...stroke} d="M4 4v4h4M12 8v5l3 2" /></svg>;
   if (name === "users") return <svg {...common}><path {...stroke} d="M16 19v-1.2A3.8 3.8 0 0 0 12.2 14H7.8A3.8 3.8 0 0 0 4 17.8V19M10 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM20 19v-1.2A3.8 3.8 0 0 0 17 14.1M16 5.1a3 3 0 0 1 0 5.8" /></svg>;
+  if (name === "book") return <svg {...common}><path {...stroke} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path {...stroke} d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></svg>;
   if (name === "pause") return <svg {...common}><path {...stroke} d="M8 6v12M16 6v12" /></svg>;
   return <svg {...common}><circle {...stroke} cx="12" cy="12" r="8" /></svg>;
 }

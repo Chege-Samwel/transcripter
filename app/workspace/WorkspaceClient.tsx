@@ -9,25 +9,41 @@ import EditsCanvas from "../../components/EditsCanvas";
 import GuidingRules from "../../components/GuidingRules";
 import Icon from "../../components/Icon";
 import ProceedingOverlay, { type OverlayLog, type OverlayStep } from "../../components/ProceedingOverlay";
-import { requestJson } from "../../lib/http";
+import { JsonResult, requestJson } from "../../lib/http";
 import { capToWords, countWords } from "../../lib/limits";
 import { clearDraft, readDraft, readLocalJob, upsertLocalJob, writeDraft } from "../../lib/local-jobs";
 import { createJobRecord, emptyStages, jobTitleFromSource, parseJobRecord, type Account, type ErrorEvent, type JobKind, type JobRecord, type ResumeCursor } from "../../lib/types";
 import {
   chunkTranscript,
   DEFAULT_CONFIG,
+  DEFAULT_TEMPLATES,
   estimateTokens,
   formatNumber,
   makeId,
+  MODEL_OPTIONS,
   normalizeConfig,
+  normalizeOutputGuide,
   PIPELINE,
   sectionChecks,
   shortModel,
   slugify,
   type WorkflowConfig,
+  type WorkflowTemplate,
 } from "../../lib/workflow";
 
 type Notice = { tone: "success" | "error" | "info"; message: string };
+
+type ProcessResponse = {
+  ok?: boolean;
+  output?: string;
+  error?: string;
+  modelUsed?: string;
+  provider?: string;
+  demo?: boolean;
+  warning?: string;
+  retryable?: boolean;
+  attempts?: { model: string; error: string }[];
+};
 
 function downloadBlob(blob: Blob, fileName: string) {
   const url = URL.createObjectURL(blob);
@@ -48,6 +64,12 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const [config, setConfig] = useState<WorkflowConfig>({ ...DEFAULT_CONFIG, fallbackModels: [...DEFAULT_CONFIG.fallbackModels] });
   const [kind, setKind] = useState<JobKind>(account.canBookJob ? "job" : "demo");
   const [job, setJob] = useState<JobRecord | null>(null);
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>(DEFAULT_TEMPLATES);
+  const [providersStatus, setProvidersStatus] = useState<{
+    google?: { available: boolean; defaultModel?: string };
+    nvidia?: { available: boolean; defaultModel?: string };
+    openrouter?: { available: boolean; defaultModel?: string };
+  } | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [refineInstruction, setRefineInstruction] = useState("");
@@ -61,6 +83,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const [overlayLog, setOverlayLog] = useState<OverlayLog[]>([]);
   const [overlayError, setOverlayError] = useState<{ message: string; retryable?: boolean } | null>(null);
   const [overlayBusy, setOverlayBusy] = useState(false);
+  const [singleModelOnly, setSingleModelOnly] = useState(false);
   const [summaryLeft, setSummaryLeft] = useState("");
   const [summaryRight, setSummaryRight] = useState("");
   const transcriptInputRef = useRef<HTMLInputElement>(null);
@@ -115,8 +138,22 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     async function load() {
       let defaults = normalizeConfig(DEFAULT_CONFIG);
       try {
-        const { data } = await requestJson<{ workflow?: { config?: unknown } | null }>("/api/workflow");
-        if (data.workflow?.config) defaults = normalizeConfig(data.workflow.config);
+        const [wfRes, tplRes] = await Promise.all([
+          requestJson<{
+            workflow?: { config?: unknown } | null;
+            providers?: {
+              google?: { available: boolean; defaultModel?: string };
+              nvidia?: { available: boolean; defaultModel?: string };
+              openrouter?: { available: boolean; defaultModel?: string };
+            };
+          }>("/api/workflow"),
+          requestJson<{ templates?: WorkflowTemplate[] }>("/api/templates"),
+        ]);
+        if (wfRes.data.providers) setProvidersStatus(wfRes.data.providers);
+        if (wfRes.data.workflow?.config) defaults = normalizeConfig(wfRes.data.workflow.config);
+        if (Array.isArray(tplRes.data.templates) && tplRes.data.templates.length) {
+          setTemplates(tplRes.data.templates);
+        }
       } catch { /* defaults */ }
 
       if (jobId) {
@@ -183,13 +220,68 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   }, []);
 
   const readFile = useCallback(async (file: File) => {
-    const isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
-    if (!isZip) return { text: await file.text(), name: file.name };
+    let isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
+    if (!isZip) {
+      try {
+        const slice = await file.slice(0, 4).arrayBuffer();
+        const header = new Uint8Array(slice);
+        if (header[0] === 0x50 && header[1] === 0x4b && (header[2] === 0x03 || header[2] === 0x05 || header[2] === 0x07)) {
+          isZip = true;
+        }
+      } catch { /* normal text */ }
+    }
+
+    if (!isZip) {
+      const text = await file.text();
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed?.type === "transcripter-workflow-template" && parsed.template) {
+          return {
+            text: parsed.template.sampleInput || "",
+            name: file.name,
+            template: parsed.template as WorkflowTemplate,
+          };
+        }
+      } catch { /* not template json */ }
+      return { text, name: file.name, template: null };
+    }
+
     const zip = await JSZip.loadAsync(file);
     const names = Object.keys(zip.files);
-    const entryName = names.find((name) => !zip.files[name].dir && name.split("/").pop()?.toLowerCase() === "v.txt") || names.find((name) => !zip.files[name].dir && /\.(txt|md|markdown)$/i.test(name));
-    if (!entryName || !zip.file(entryName)) throw new Error("The ZIP must contain V.txt or a text/markdown file.");
-    return { text: await zip.file(entryName)!.async("text"), name: `${file.name} → ${entryName}` };
+    const entryName =
+      names.find((name) => !zip.files[name].dir && name.split("/").pop()?.toLowerCase() === "v.txt") ||
+      names.find((name) => !zip.files[name].dir && /^(source|transcript|input)\.(txt|md)$/i.test(name.split("/").pop() || "")) ||
+      names.find((name) => !zip.files[name].dir && /\.(txt|md|markdown)$/i.test(name) && !/(rules|guide|checks|output)/i.test(name)) ||
+      names.find((name) => !zip.files[name].dir && /\.(txt|md|markdown)$/i.test(name));
+
+    if (!entryName || !zip.file(entryName)) {
+      throw new Error("The ZIP must contain V.txt or a text/markdown file.");
+    }
+    const transcriptText = await zip.file(entryName)!.async("text");
+
+    let extractedTemplate: Partial<WorkflowTemplate> | null = null;
+    const jsonTemplateFile = names.find((n) => !zip.files[n].dir && /(template|workflow|rules|output_guide)\.json$/i.test(n));
+    if (jsonTemplateFile) {
+      try {
+        const rawJson = await zip.file(jsonTemplateFile)!.async("text");
+        const parsed = JSON.parse(rawJson);
+        extractedTemplate = parsed.template || parsed;
+      } catch { /* continue */ }
+    } else {
+      const rulesFile = names.find((n) => !zip.files[n].dir && /(rules|guide)\.txt$/i.test(n));
+      if (rulesFile) {
+        try {
+          const rulesText = await zip.file(rulesFile)!.async("text");
+          extractedTemplate = { formatRules: rulesText, editRules: rulesText };
+        } catch { /* continue */ }
+      }
+    }
+
+    return {
+      text: transcriptText,
+      name: `${file.name} → ${entryName}`,
+      template: extractedTemplate,
+    };
   }, []);
 
   const handleFile = useCallback(async (file?: File) => {
@@ -198,7 +290,15 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
       const loaded = await readFile(file);
       updateConfig("transcript", loaded.text);
       updateConfig("sourceFileName", loaded.name);
-      setNotice({ tone: "success", message: `${loaded.name} is loaded.` });
+      if (loaded.template) {
+        if (loaded.template.formatRules) updateConfig("formatRules", loaded.template.formatRules);
+        if (loaded.template.editRules) updateConfig("editRules", loaded.template.editRules);
+        if (loaded.template.masterPrompt) updateConfig("masterPrompt", loaded.template.masterPrompt);
+        if (loaded.template.outputGuide) updateConfig("outputGuide", normalizeOutputGuide(loaded.template.outputGuide));
+        setNotice({ tone: "success", message: `${loaded.name} is loaded and packaged template rules & output guide applied.` });
+      } else {
+        setNotice({ tone: "success", message: `${loaded.name} is loaded.` });
+      }
     } catch (caught) {
       setOverlayOpen(true);
       setOverlayBusy(false);
@@ -247,15 +347,40 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     setOverlayLog([]);
     setOverlaySteps(PIPELINE.map((stage) => ({ key: stage.key, label: stage.label, description: stage.description, status: "waiting" as const })));
 
+    // Refresh latest system settings if available, preserving user-selected model
+    let activeConfig = config;
+    try {
+      const { data: wfData } = await requestJson<{
+        workflow?: { config?: unknown } | null;
+        providers?: {
+          google?: { available: boolean; defaultModel?: string };
+          nvidia?: { available: boolean; defaultModel?: string };
+          openrouter?: { available: boolean; defaultModel?: string };
+        };
+      }>("/api/workflow");
+      if (wfData?.providers) setProvidersStatus(wfData.providers);
+      if (wfData?.workflow?.config) {
+        const latestNormalized = normalizeConfig(wfData.workflow.config);
+        activeConfig = {
+          ...config,
+          primaryModel: config.primaryModel || latestNormalized.primaryModel,
+          fallbackModels: latestNormalized.fallbackModels,
+        };
+        setConfig(activeConfig);
+      }
+    } catch {
+      // Continue with active configuration
+    }
+
     let currentJob = jobRef.current;
     if (mode === "fresh" || !currentJob) {
       const created = createJobRecord({
         ownerEmail: account.email,
         kind,
-        config: { ...config, transcript: source },
+        config: { ...activeConfig, transcript: source },
         source,
-        sourceFileName: config.sourceFileName,
-        title: jobTitleFromSource(source, config.sourceFileName),
+        sourceFileName: activeConfig.sourceFileName,
+        title: jobTitleFromSource(source, activeConfig.sourceFileName),
         id: currentJob?.id,
       });
       created.status = "running";
@@ -270,7 +395,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
         window.history.replaceState(null, "", `/workspace/${currentJob.id}`);
       }
     } else {
-      currentJob = { ...currentJob, status: "running", kind, source, config: { ...config, transcript: source } };
+      currentJob = { ...currentJob, status: "running", kind, source, config: { ...activeConfig, transcript: source } };
       await persist(currentJob);
     }
 
@@ -308,30 +433,23 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           setSummaryRight(stage.label);
           pushLog(`${stage.label} · batch ${batchIndex + 1}`, "running");
 
-          const { ok, data } = await requestJson<{
-            ok?: boolean;
-            output?: string;
-            error?: string;
-            modelUsed?: string;
-            demo?: boolean;
-            warning?: string;
-            retryable?: boolean;
-            attempts?: { model: string; error: string }[];
-          }>(
+          const isAdmin = account.role === "admin";
+          const processRes: JsonResult<ProcessResponse> = await requestJson<ProcessResponse>(
             "/api/process",
             {
               method: "POST",
               body: JSON.stringify({
                 stage: stage.key,
                 text: currentText,
-                masterPrompt: config.masterPrompt,
-                formatRules: config.formatRules,
-                editRules: config.editRules,
-                model: config.primaryModel,
-                fallbackModels: config.fallbackModels,
-                contextWindow: config.contextWindow,
-                maxOutputTokens: config.maxOutputTokens,
-                temperature: config.temperature,
+                masterPrompt: activeConfig.masterPrompt,
+                formatRules: activeConfig.formatRules,
+                editRules: activeConfig.editRules,
+                model: activeConfig.primaryModel,
+                fallbackModels: activeConfig.fallbackModels,
+                singleModelOnly: singleModelOnly || activeConfig.primaryModel.includes("lightning") || activeConfig.primaryModel.includes(":free"),
+                contextWindow: activeConfig.contextWindow,
+                maxOutputTokens: activeConfig.maxOutputTokens,
+                temperature: activeConfig.temperature,
                 batch: { index: batchIndex, total: workBatches.length },
                 contextBefore: continuity,
                 kind,
@@ -339,13 +457,17 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
               }),
             },
             {
-              retries: 2,
+              retries: 0,
               onRetry: (attempt, reason) => pushLog(`Retrying ${stage.label} (${attempt})`, "info", reason),
             },
           );
+          const ok = processRes.ok;
+          const data = processRes.data;
 
           if (!ok || !data.output?.trim()) {
-            const attempts = data.attempts?.length ? ` ${data.attempts.map((attempt) => `${shortModel(attempt.model)}: ${attempt.error}`).join(" | ")}` : "";
+            const attempts = data.attempts?.length
+              ? ` ${data.attempts.map((attempt) => `${shortModel(attempt.model)}: ${attempt.error}`).join(" | ")}`
+              : "";
             const message = `${data.error || "This pass did not return an output."}${attempts}`;
             const event: ErrorEvent = {
               id: makeId(),
@@ -368,6 +490,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 refine: currentJob.stages.refine,
               },
               status: "failed",
+              modelUsed: data.modelUsed || currentJob.modelUsed,
               resumeCursor: { batchIndex, stageIndex, continuity },
               errorLog: [...currentJob.errorLog, event].slice(-80),
               updatedAt: new Date().toISOString(),
@@ -385,9 +508,14 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           if (stage.key === "normalize") workBatches[batchIndex].normalize = currentText;
           if (stage.key === "format") workBatches[batchIndex].format = currentText;
           if (stage.key === "edit") workBatches[batchIndex].edit = currentText;
-          pushLog(data.warning || `${stage.label} complete`, "success", data.modelUsed ? shortModel(data.modelUsed) : undefined);
+          pushLog(
+            data.warning || `${stage.label} complete`,
+            "success",
+            data.modelUsed ? shortModel(data.modelUsed) : undefined
+          );
           currentJob = {
             ...currentJob,
+            modelUsed: data.modelUsed || currentJob.modelUsed,
             batches: workBatches.map((batch) => ({ ...batch })),
             stages: {
               normalize: assemble(workBatches, "normalize"),
@@ -472,6 +600,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     setOverlaySubtitle("A refine pass uses the current edited transcript plus your instruction.");
     setOverlayPercent(35);
     pushLog("Refine pass started", "running");
+    const isAdmin = account.role === "admin";
     const { ok, data } = await requestJson<{ output?: string; error?: string; retryable?: boolean; modelUsed?: string }>(
       "/api/process",
       {
@@ -492,7 +621,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           jobId: current?.id,
         }),
       },
-      { retries: 2, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
+      { retries: 0, onRetry: (attempt, reason) => pushLog(`Retrying refine (${attempt})`, "info", reason) },
     );
     if (!ok || !data.output?.trim()) {
       setOverlayBusy(false);
@@ -662,15 +791,161 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           </div>
           <aside className="intake-side">
             <div className="card direction-card">
-              <div className="card-topline"><p className="overline">GUIDING RULES</p><Icon name="edit" size={17} /></div>
-              <h3>{config.name}</h3>
-              <p>{config.description || "Saved rules shape each pass. Adjust them here for this transcript, or change workspace defaults in Guiding rules."}</p>
+              <div className="card-topline">
+                <p className="overline">WORKFLOW TEMPLATE</p>
+                <Icon name="edit" size={17} />
+              </div>
+              <select
+                value={config.templateId || templates[0]?.id || ""}
+                onChange={(e) => {
+                  const selected = templates.find((t) => t.id === e.target.value);
+                  if (selected) {
+                    updateConfig("templateId", selected.id);
+                    updateConfig("name", selected.name);
+                    updateConfig("formatRules", selected.formatRules);
+                    updateConfig("editRules", selected.editRules);
+                    updateConfig("masterPrompt", selected.masterPrompt);
+                    updateConfig("outputGuide", normalizeOutputGuide(selected.outputGuide));
+                    setNotice({ tone: "success", message: `Template "${selected.name}" applied.` });
+                  }
+                }}
+                style={{
+                  width: "100%",
+                  margin: "8px 0 10px",
+                  padding: "6px 10px",
+                  border: "1px solid var(--line)",
+                  borderRadius: "6px",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  background: "var(--paper)",
+                  color: "var(--ink)",
+                }}
+                aria-label="Select workflow template"
+              >
+                {templates.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.name} ({tpl.category})
+                  </option>
+                ))}
+              </select>
+              <p>{config.description || config.outputGuide?.description || "Saved rules and output guide shape each pass."}</p>
               <button type="button" className="card-link" onClick={() => setRulesOpen((open) => !open)}>
-                {rulesOpen ? "Hide rules" : "Adjust rules"} <Icon name="chevron" size={14} />
+                {rulesOpen ? "Hide rules & guide" : "Adjust rules & guide"} <Icon name="chevron" size={14} />
               </button>
               {rulesOpen && <GuidingRules config={config} onChange={updateConfig} />}
-              <Link href="/settings" className="card-link">Workspace defaults <Icon name="arrow" size={14} /></Link>
+              <Link href="/settings" className="card-link">Manage templates &amp; Output Guide <Icon name="arrow" size={14} /></Link>
             </div>
+
+            <div className="card model-card">
+              <div className="card-topline">
+                <div>
+                  <p className="overline">AI MODEL ENGINE</p>
+                  <h3 style={{ fontSize: "14px", margin: "2px 0 0" }}>Choose or type any model</h3>
+                </div>
+                <Icon name="spark" size={17} />
+              </div>
+              <p style={{ fontSize: "12px", color: "var(--muted)", margin: "4px 0 8px" }}>
+                Type your custom model or choose from cascade presets (NVIDIA Nemotron, OpenRouter Gemma, Google Gemini).
+              </p>
+
+              <datalist id="workspace-models">
+                {MODEL_OPTIONS.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+
+              <input
+                list="workspace-models"
+                value={config.primaryModel || "nvidia/nemotron-3-ultra-550b-a55b"}
+                onChange={(e) => updateConfig("primaryModel", e.target.value)}
+                placeholder="e.g. nvidia/nemotron-3-ultra-550b-a55b"
+                style={{
+                  width: "100%",
+                  padding: "7px 10px",
+                  border: "1px solid var(--line)",
+                  borderRadius: "6px",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                  fontFamily: "var(--mono, monospace)",
+                  background: "var(--paper)",
+                  color: "var(--ink)",
+                  boxSizing: "border-box",
+                }}
+                aria-label="Active AI Model"
+              />
+
+              <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginTop: "6px" }}>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "nvidia/nemotron-3.5-lightning:free")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "nvidia/nemotron-3.5-lightning:free" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "nvidia/nemotron-3.5-lightning:free" ? "#fff" : "var(--ink)", cursor: "pointer", fontWeight: 600 }}
+                >
+                  ⚡ Nemotron 3.5 Lightning (Free)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "nvidia/nemotron-3.5-lightning")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "nvidia/nemotron-3.5-lightning" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "nvidia/nemotron-3.5-lightning" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  ⚡ Nemotron 3.5 Lightning
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "nvidia/nemotron-3-ultra-550b-a55b")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "nvidia/nemotron-3-ultra-550b-a55b" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "nvidia/nemotron-3-ultra-550b-a55b" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  Nemotron 3 Ultra
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "google/gemma-4-26b-a4b-it:free")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "google/gemma-4-26b-a4b-it:free" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "google/gemma-4-26b-a4b-it:free" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  Gemma 4:free
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "gemini-2.0-flash")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "gemini-2.0-flash" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "gemini-2.0-flash" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  Gemini 2.0 Flash
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center", marginTop: "8px" }}>
+                <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "4px" }}>
+                  Active: <strong>{shortModel(config.primaryModel || "nvidia/nemotron-3-ultra-550b-a55b")}</strong>
+                </span>
+                {providersStatus?.nvidia?.available ? (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#e6f4ea", color: "#137333", borderRadius: "4px" }}>
+                    ● NVIDIA Ready
+                  </span>
+                ) : (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#f1f3f4", color: "#5f6368", borderRadius: "4px" }}>
+                    ○ NVIDIA Key Not Set
+                  </span>
+                )}
+                {providersStatus?.openrouter?.available ? (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#e6f4ea", color: "#137333", borderRadius: "4px" }}>
+                    ● OpenRouter Ready
+                  </span>
+                ) : (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#f1f3f4", color: "#5f6368", borderRadius: "4px" }}>
+                    ○ OpenRouter Not Set
+                  </span>
+                )}
+                {providersStatus?.google?.available ? (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#e6f4ea", color: "#137333", borderRadius: "4px" }}>
+                    ● Google Ready
+                  </span>
+                ) : (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#f1f3f4", color: "#5f6368", borderRadius: "4px" }}>
+                    ○ Google Key Not Set
+                  </span>
+                )}
+              </div>
+            </div>
+
             <div className="run-panel">
               <div className="run-panel-icon"><Icon name="play" size={18} /></div>
               <p className="overline">READY TO EDIT</p>
@@ -709,7 +984,12 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
         <section className="review-view">
           <div className="review-heading">
             <div>
-              <p className="overline">{job.status === "complete" ? "EDIT COMPLETE" : job.status.toUpperCase()}</p>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                <p className="overline" style={{ margin: 0 }}>{job.status === "complete" ? "EDIT COMPLETE" : job.status.toUpperCase()}</p>
+                <span className="badge" style={{ fontSize: "11px", padding: "2px 8px", background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "4px" }}>
+                  Active Model: <strong>{shortModel(job.modelUsed || config.primaryModel || "nvidia/nemotron-3-ultra-550b-a55b")}</strong>
+                </span>
+              </div>
               <h2>Complete edits canvas.</h2>
               <p>Copy or paste any stage. Request changes, continue a stopped run, or start a new transcript — this one stays in history.</p>
             </div>
@@ -790,6 +1070,10 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
         log={overlayLog}
         error={overlayError}
         busy={overlayBusy}
+        activeModel={config.primaryModel}
+        onModelChange={(newModel) => updateConfig("primaryModel", newModel)}
+        singleModelOnly={singleModelOnly}
+        onToggleSingleModel={setSingleModelOnly}
         onRetry={() => void runWorkflow("retry")}
         onContinue={() => {
           pauseRef.current = true;

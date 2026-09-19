@@ -75,6 +75,28 @@ CREATE TABLE IF NOT EXISTS transcripter_error_events (
 CREATE INDEX IF NOT EXISTS transcripter_error_events_created_idx
   ON transcripter_error_events (created_at DESC);
 
+CREATE TABLE IF NOT EXISTS transcripter_system_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS transcripter_workflow_templates (
+  id TEXT PRIMARY KEY,
+  owner_email TEXT,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'general',
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS transcripter_workflow_templates_owner_idx
+  ON transcripter_workflow_templates (owner_email, updated_at DESC);
+
 -- Applied-migration bookkeeping (managed by the migrator).
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version TEXT PRIMARY KEY,

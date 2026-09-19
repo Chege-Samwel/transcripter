@@ -28,7 +28,9 @@ export function middleware(request: NextRequest) {
   if ((pathname === "/login" || pathname === "/register") && hasSessionCookie) {
     return NextResponse.redirect(new URL("/workspace", request.url));
   }
-  return NextResponse.next();
+  const response = NextResponse.next();
+  response.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  return response;
 }
 
 export const config = {

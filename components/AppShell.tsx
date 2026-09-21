@@ -60,7 +60,7 @@ export default function AppShell({ children, user }: { children: ReactNode; user
           {user.role === "admin" && (
             <Link className={pathname.startsWith("/admin") ? "active" : ""} href="/admin" onClick={() => setMobileOpen(false)}>
               <Icon name="users" size={17} />
-              <span>Approvals</span>
+              <span>Admin &amp; Models</span>
             </Link>
           )}
         </nav>

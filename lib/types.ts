@@ -65,6 +65,7 @@ export type JobRecord = {
   resumeCursor: ResumeCursor | null;
   wordCount: number;
   errorLog: ErrorEvent[];
+  modelUsed?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -144,6 +145,7 @@ export function parseJobRecord(value: unknown): JobRecord | null {
     resumeCursor: candidate.resumeCursor && typeof candidate.resumeCursor === "object" ? candidate.resumeCursor : null,
     wordCount: Number(candidate.wordCount) || countWords(source),
     errorLog: Array.isArray(candidate.errorLog) ? candidate.errorLog : [],
+    modelUsed: typeof candidate.modelUsed === "string" ? candidate.modelUsed : undefined,
     createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : new Date().toISOString(),
   };

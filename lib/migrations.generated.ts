@@ -109,8 +109,8 @@ SELECT
   'imported-' || md5(owner_email),
   owner_email,
   COALESCE(NULLIF(config->>'name', ''), 'Imported edit'),
-  'job',
-  CASE WHEN COALESCE(result, '') = '' THEN 'draft' ELSE 'complete' END,
+  'job'::job_kind,
+  CASE WHEN COALESCE(result, '') = '' THEN 'draft' ELSE 'complete' END::job_status,
   config,
   COALESCE(config->>'transcript', ''),
   COALESCE(config->>'sourceFileName', ''),
@@ -120,4 +120,59 @@ SELECT
   0
 FROM transcripter_workflows
 ON CONFLICT (id) DO NOTHING;` },
+  { version: "0003", name: "0003_system_models_and_templates", sql: `-- 0003: system models configuration (admin-only) and workflow templates.
+
+CREATE TABLE IF NOT EXISTS transcripter_system_settings (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by TEXT
+);
+
+INSERT INTO transcripter_system_settings (key, value, updated_by)
+VALUES (
+  'system_models',
+  jsonb_build_object(
+    'primaryModel', 'meta/llama-3.3-70b-instruct',
+    'fallbackModels', jsonb_build_array('nvidia/llama-3.1-nemotron-70b-instruct', 'meta/llama-3.1-8b-instruct')
+  ),
+  'system'
+)
+ON CONFLICT (key) DO UPDATE SET
+  value = EXCLUDED.value
+  WHERE transcripter_system_settings.value->>'primaryModel' IN ('nvidia/llama-3.1-nemotron-ultra-253b-v1', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.1-70b-instruct');
+
+CREATE TABLE IF NOT EXISTS transcripter_workflow_templates (
+  id TEXT PRIMARY KEY,
+  owner_email TEXT,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'general',
+  config JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_default BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS transcripter_workflow_templates_owner_idx
+  ON transcripter_workflow_templates (owner_email, updated_at DESC);` },
+  { version: "0004", name: "0004_fix_active_system_models", sql: `-- Auto-upgrade system models to user cascade defaults (NVIDIA Nemotron 3.5 Lightning, Nemotron 3 Ultra, OpenRouter Gemma, Google Gemini)
+UPDATE transcripter_system_settings
+SET value = jsonb_build_object(
+  'primaryModel', 'nvidia/nemotron-3.5-lightning:free',
+  'fallbackModels', jsonb_build_array('nvidia/nemotron-3.5-lightning', 'nvidia/nemotron-3-ultra-550b-a55b', 'google/gemma-4-26b-a4b-it:free', 'gemini-2.0-flash')
+),
+updated_at = NOW(),
+updated_by = 'migration_0004'
+WHERE key = 'system_models'
+  AND (
+    value->>'primaryModel' LIKE '%llama-3.1-8b%'
+    OR value->>'primaryModel' LIKE '%llama-3.2-3b%'
+    OR value->>'primaryModel' LIKE '%nemotron-ultra-253b%'
+    OR value->>'primaryModel' LIKE '%nemotron-nano%'
+    OR value->>'primaryModel' LIKE '%nemotron-4b%'
+    OR value->>'primaryModel' LIKE '%llama-3.1-70b%'
+    OR value->>'primaryModel' IS NULL
+    OR value->>'primaryModel' = ''
+  );` },
 ];

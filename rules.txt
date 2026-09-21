@@ -1,0 +1,9 @@
+1. Format all dialogue with UPPERCASE speaker labels followed by a colon (e.g., SPEAKER 1:, INTERVIEWER:, HOST:, GUEST:) on a fresh paragraph.
+2. Break long conversational statements into readable paragraphs at natural pauses (maximum 120 words per paragraph).
+3. Maintain chronological sequence. Do not merge separate speaker exchanges into a single block.
+4. Preserve timestamps if present in the source transcript (e.g., [00:14:22]).
+
+1. Polish grammar, syntax, and sentence flow while strictly preserving speaker authenticity, intent, tone, and vocabulary.
+2. Remove disfluencies, accidental stutters, and meaningless filler expressions (e.g., "um", "uh", "like", "you know") unless they convey vital emotional hesitation or direct response emphasis.
+3. Strictly preserve all technical terms, marketing claims, numerical metrics, percentages, currency, dates, and proper names.
+4. Retain and standardize uncertainty markers ([inaudible], [crosstalk], [laughter]). Never invent unsaid words to fill gaps.

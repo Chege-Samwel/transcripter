@@ -214,10 +214,10 @@ export async function setUserStatus(email: string, status: UserStatus, actorEmai
   try {
     const result = await pool.query(
       `UPDATE transcripter_users
-       SET status = $2,
-           role = COALESCE($3, role),
-           approved_at = CASE WHEN $2 = 'approved' THEN COALESCE(approved_at, NOW()) ELSE NULL END,
-           approved_by = CASE WHEN $2 = 'approved' THEN $4 ELSE NULL END,
+       SET status = $2::user_status,
+           role = COALESCE($3::user_role, role),
+           approved_at = CASE WHEN $2::user_status = 'approved'::user_status THEN COALESCE(approved_at, NOW()) ELSE NULL END,
+           approved_by = CASE WHEN $2::user_status = 'approved'::user_status THEN $4 ELSE NULL END,
            updated_at = NOW()
        WHERE email = $1
        RETURNING email`,

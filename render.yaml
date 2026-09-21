@@ -15,7 +15,17 @@ services:
         sync: false
       - key: AUTH_PASSWORD_HASH
         sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: VITE_OPENROUTER_API_KEY
+        sync: false
       - key: NVIDIA_API_KEY
+        sync: false
+      - key: VITE_NVIDIA_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_API_KEY
         sync: false
       - key: DATABASE_URL
         sync: false

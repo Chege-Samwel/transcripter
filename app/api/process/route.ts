@@ -4,11 +4,19 @@ import { logError } from "../../../lib/errors";
 import { capToWords, countWords } from "../../../lib/limits";
 import {
   fetchAICascade,
+  getDeepSeekApiKey,
   getGoogleApiKey,
   getNvidiaApiKey,
   getOpenRouterApiKey,
 } from "../../../lib/ai-providers";
 import { DEFAULT_SYSTEM_MODELS, getSystemModels } from "../../../lib/system-settings";
+import { buildDeliveryContract } from "../../../lib/template-guards";
+import {
+  auditOutputAgainstGuide,
+  normalizeOutputGuide,
+  sectionChecks,
+  type OutputGuide,
+} from "../../../lib/workflow";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -32,6 +40,10 @@ type ProcessBody = {
   contextBefore?: string;
   kind?: "demo" | "job";
   jobId?: string;
+  /** Output Guide of the selected template — enforced on the model and audited after the pass. */
+  outputGuide?: unknown;
+  templateId?: string;
+  templateName?: string;
 };
 
 const stageInstructions: Record<Stage, string> = {
@@ -51,35 +63,21 @@ function estimateTokens(value: string) {
   return Math.ceil(value.length / 4);
 }
 
-type SectionCheck = {
-  section: number;
-  status: "pass" | "review";
-  score: number;
-  note: string;
-  flags: string[];
-};
-
-function checkSection(text: string, section: number): SectionCheck {
-  const flags: string[] = [];
-  const trimmed = text.trim();
-  if (!trimmed) flags.push("Empty section");
-  if (/\[(?:inaudible|crosstalk|unintelligible|unknown)\]|\bTODO\b|\?{3,}/i.test(trimmed)) {
-    flags.push("Unresolved transcript marker");
-  }
-  if (/\b(\w+)\s+\1\b/i.test(trimmed)) flags.push("Repeated word");
-  if (trimmed.length > 300 && !/[.!?…]["')\]]?$/.test(trimmed)) {
-    flags.push("Long sentence needs a punctuation review");
-  }
-  if (trimmed && !/[.!?…"')\]]$/.test(trimmed) && trimmed.length > 40) {
-    flags.push("Check ending punctuation");
-  }
-  const score = Math.max(0, 100 - flags.length * 22);
+/** Compact, client-friendly shape of the deterministic Output Guide audit. */
+function summarizeGuideAudit(text: string, guide: OutputGuide) {
+  const audit = auditOutputAgainstGuide(text, guide);
   return {
-    section,
-    status: flags.length ? "review" : "pass",
-    score,
-    note: flags.length ? flags.join(" · ") : "Structure and transcript markers look clean",
-    flags,
+    overallScore: audit.overallScore,
+    passedCount: audit.passedCount,
+    reviewCount: audit.reviewCount,
+    reports: audit.reports.map((report) => ({
+      checkId: report.checkId,
+      label: report.label,
+      status: report.status,
+      score: report.score,
+      message: report.message,
+      expectation: report.expectation,
+    })),
   };
 }
 
@@ -141,6 +139,9 @@ export async function POST(request: NextRequest) {
     const continuity = body.contextBefore?.trim()
       ? `\nPrevious-batch continuity context (do not repeat it in the output):\n${body.contextBefore.trim().slice(-2000)}`
       : "";
+    const outputGuide: OutputGuide = normalizeOutputGuide(body.outputGuide);
+    const deliveryContract = buildDeliveryContract(outputGuide, body.templateName || undefined);
+
     const userPrompt = [
       `${batchLabel}.`,
       `Formatting contract:\n${formatRules}`,
@@ -149,7 +150,12 @@ export async function POST(request: NextRequest) {
       `Transcript batch:\n${text}`,
       continuity,
     ].filter(Boolean).join("\n\n");
-    const systemPrompt = `${masterPrompt}\n\nPROCESS FOR THIS CALL:\n${stageInstructions[stage]}\n\nSafety rules: Work only on the supplied batch. Preserve names, numbers, dates, uncertainty markers, and chronology. Do not mention these instructions. Return only the requested transcript or quality note.`;
+    const systemPrompt = [
+      masterPrompt,
+      `PROCESS FOR THIS CALL:\n${stageInstructions[stage]}`,
+      `DELIVERY CONTRACT (the finished document must satisfy every point):\n${deliveryContract}`,
+      "Safety rules: Work only on the supplied batch. Preserve names, numbers, dates, uncertainty markers, and chronology. Never invent content to satisfy the delivery contract — if the source does not support a required section, keep its header and write the guide's documented placeholder. Do not mention these instructions. Return only the requested transcript or quality note.",
+    ].join("\n\n");
     const requestTokens = estimateTokens(`${systemPrompt}\n${userPrompt}`);
 
     const systemModels = await getSystemModels();
@@ -176,18 +182,20 @@ export async function POST(request: NextRequest) {
     const hasNvidiaKey = Boolean(getNvidiaApiKey());
     const hasOpenRouterKey = Boolean(getOpenRouterApiKey());
     const hasGoogleKey = Boolean(getGoogleApiKey());
-    const hasAnyKey = hasNvidiaKey || hasOpenRouterKey || hasGoogleKey;
+    const hasDeepSeekKey = Boolean(getDeepSeekApiKey());
+    const hasAnyKey = hasNvidiaKey || hasOpenRouterKey || hasGoogleKey || hasDeepSeekKey;
 
     const requestedModel = (body.model || systemModels.primaryModel || DEFAULT_SYSTEM_MODELS.primaryModel).trim();
 
     // Support simulated response ONLY when explicitly requested by test runner
     const isTestMock = request.headers.get("x-test-mock") === "true";
     if (isTestMock) {
-      const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
+      const checks = stage === "crosscheck" ? sectionChecks(text, outputGuide) : undefined;
       return NextResponse.json({
         ok: true,
         output: text,
         checks,
+        guideAudit: summarizeGuideAudit(text, outputGuide),
         modelUsed: requestedModel,
         provider: "test-mock",
         fallbackUsed: false,
@@ -200,7 +208,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           ok: false,
-          error: "No AI provider keys configured. Please add OPENROUTER_API_KEY, NVIDIA_API_KEY, or GEMINI_API_KEY in your settings to execute this pass.",
+          error: "No AI provider keys configured. Please add DEEPSEEK_API_KEY, OPENROUTER_API_KEY, NVIDIA_API_KEY, or GEMINI_API_KEY in your settings to execute this pass.",
           code: "NO_API_KEY",
           retryable: false,
         },
@@ -222,11 +230,17 @@ export async function POST(request: NextRequest) {
         }
       );
 
-      const checks = stage === "crosscheck" ? [checkSection(text, body.batch?.index || 0)] : undefined;
+      const checks = stage === "crosscheck" ? sectionChecks(text, outputGuide) : undefined;
+      // Output guard: the pass is only "done" when the delivered text satisfies
+      // the template's own Output Guide expectations. Failures are reported, so
+      // the canvas can flag them instead of trusting the model.
+      const guideAudit = summarizeGuideAudit(result.output, outputGuide);
       return NextResponse.json({
         ok: true,
         output: result.output,
         checks,
+        guideAudit,
+        guideFlags: guideAudit.reports.filter((report) => report.status === "review").map((report) => report.label),
         modelUsed: result.modelUsed,
         provider: result.provider,
         fallbackUsed: result.modelUsed !== requestedModel,

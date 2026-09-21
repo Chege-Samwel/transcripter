@@ -7,7 +7,42 @@ export type OutputGuideCheck = {
   description: string;
   rule: string;
   category: "speaker" | "structure" | "punctuation" | "verbatim" | "formatting";
+  /**
+   * Machine-checkable expectation. When present it is evaluated exactly against
+   * the delivered output; when absent the category heuristic is used instead.
+   * This is what turns a template's Output Guide into an enforceable guard.
+   */
+  expectation?: OutputGuideExpectation;
 };
+
+/**
+ * Deterministic, machine-checkable delivery expectations attached to an Output
+ * Guide check. Every kind is evaluated against the finished transcript, so a
+ * template cannot silently "pass" without producing the required structure.
+ */
+export type OutputGuideExpectation =
+  /** Every listed header must appear, in order. */
+  | {
+      kind: "headers";
+      headers: string[];
+      caseSensitive?: boolean;
+      /** Accepted spelling variants per required header, e.g. "TRAUMA HISTORY": ["TRAUMA HX"]. */
+      aliases?: Record<string, string[]>;
+    }
+  /** At least `minItems` numbered lines such as "1." / "1)" must appear. */
+  | { kind: "numbered"; minItems?: number }
+  /** At least `minBoxes` checkbox tokens such as "[x]" or "[ ]" must appear. */
+  | { kind: "checklist"; minBoxes?: number; requireChecked?: boolean }
+  /** The pattern must match at least `minMatches` times. */
+  | { kind: "regex"; pattern: string; flags?: string; minMatches?: number; hint?: string }
+  /** The pattern must NOT match (placeholder text, filler, fabricated markers). */
+  | { kind: "absence"; pattern: string; flags?: string; hint?: string }
+  /** Speaker turns must use an uppercase label followed by a colon. */
+  | { kind: "speakerLabels"; pattern?: string; minTurns?: number }
+  /** No paragraph may exceed `max` words. */
+  | { kind: "maxWordsPerParagraph"; max: number }
+  /** The document must contain at least `characters` characters. */
+  | { kind: "minLength"; characters: number };
 
 export type OutputGuide = {
   title: string;
@@ -58,6 +93,8 @@ export type WorkflowConfig = {
 
 export type SectionCheck = {
   section: number;
+  /** Section name when the active template declares required headers. */
+  label?: string;
   status: "pass" | "review";
   score: number;
   note: string;
@@ -98,6 +135,10 @@ export const MODEL_OPTIONS = [
   "nvidia/nemotron-3.5-lightning",
   "nvidia/nemotron-3-ultra-550b-a55b",
   "google/gemma-4-26b-a4b-it:free",
+  // DeepSeek (api.deepseek.com — set DEEPSEEK_API_KEY)
+  "deepseek-flash",
+  "deepseek-v4-pro",
+  "deepseek-chat",
   "gemini-2.0-flash",
   "gemini-2.5-flash",
   "gemini-1.5-flash",
@@ -122,6 +163,7 @@ export const DEFAULT_OUTPUT_GUIDE: OutputGuide = {
       description: "Verifies every speaker statement begins with a standardized uppercase label and colon.",
       rule: "Standardized uppercase label followed by colon (e.g. SPEAKER 1:).",
       category: "speaker",
+      expectation: { kind: "speakerLabels", minTurns: 2 },
     },
     {
       id: "check-paragraphs",
@@ -129,6 +171,7 @@ export const DEFAULT_OUTPUT_GUIDE: OutputGuide = {
       description: "Checks that paragraphs are comfortably broken and avoid unbroken text blocks over 150 words.",
       rule: "Paragraphs under 120 words with double line break between speaker turns.",
       category: "structure",
+      expectation: { kind: "maxWordsPerParagraph", max: 150 },
     },
     {
       id: "check-markers",
@@ -150,6 +193,7 @@ export const DEFAULT_OUTPUT_GUIDE: OutputGuide = {
       description: "Identifies accidental double words and speech stumbles without flattening intentional emphasis.",
       rule: "No unintentional consecutive repeated words.",
       category: "formatting",
+      expectation: { kind: "absence", pattern: "\\b([A-Za-z]{2,})\\s+\\1\\b", hint: "consecutive duplicate words must be cleaned" },
     },
   ],
 };
@@ -200,6 +244,7 @@ Preserve proper names, specialized terminology, numerical figures, dates, and un
           description: "Verifies every speaker statement begins with an uppercase label and colon.",
           rule: "Standardized uppercase label followed by colon (e.g. SPEAKER 1:).",
           category: "speaker",
+          expectation: { kind: "speakerLabels", minTurns: 2 },
         },
         {
           id: "check-paragraphs",
@@ -207,6 +252,7 @@ Preserve proper names, specialized terminology, numerical figures, dates, and un
           description: "Ensures paragraphs remain under 120 words for optimal reading flow.",
           rule: "Paragraphs under 120 words with double line break between speaker turns.",
           category: "structure",
+          expectation: { kind: "maxWordsPerParagraph", max: 120 },
         },
         {
           id: "check-markers",
@@ -228,6 +274,7 @@ Preserve proper names, specialized terminology, numerical figures, dates, and un
           description: "Cleans accidental duplicate words while keeping intentional stylistic emphasis.",
           rule: "No unintentional consecutive repeated words.",
           category: "formatting",
+          expectation: { kind: "absence", pattern: "\\b([A-Za-z]{2,})\\s+\\1\\b", hint: "consecutive duplicate words must be cleaned" },
         },
       ],
     },
@@ -241,141 +288,158 @@ SPEAKER 2: Absolutely. When you look at the customer retention metrics that we t
   {
     id: "tpl-psychiatric-evaluation-master",
     name: "Psychiatric Diagnostic Evaluation Master",
-    description: "Standardized psychiatric clinical documentation template. Converts clinical encounter notes and psychiatric evaluations into structured documentation (Chief Complaint, HPI, Meds, ROS, MSE, Numbered Assessment, and Psychotherapy Add-on Plan).",
+    description: "Standardized psychiatric clinical documentation template. Converts clinical encounter notes and psychiatric evaluations into audit-ready documentation (Chief Complaint, HPI, Medications, Review of Systems, MSE, numbered Assessment, and Psychotherapy Add-on plan).",
     category: "Clinical & Medical",
-    formatRules: `Follow this exact clinical section order, exact capitalization, and punctuation:
+    isDefault: false,
+    formatRules: `Emit the document with these EXACT section headers, in this order, and add nothing between them:
 
-CHIEF COMPLAINT: - [Primary diagnoses / chief concerns]
+CHIEF COMPLAINT: -
 HISTORY OF PRESENT ILLNESS: -
-[Comprehensive narrative paragraph in professional third person covering presentation, age, accompanied collateral, precipitating life events, timeline, environmental triggers, symptom endorsements (sadness, crying, sleep, appetite), fall history, medical co-morbidities (e.g. UTI, constipation), cognitive recall, and family collateral history.]
-
-CURRENT PSYCH MEDICATIONS: - [List psychotropic medications or None]
-
-CURRENT NON-PSYCH MEDICATIONS: - 
-- [List each non-psychiatric medication with bullet points or None]
-
-PAST PSYCH MEDICATIONS: - [List past psychiatric medications or None]
-
-PAST PSYCHIATRIC HISTORY: - [Prior depression/anxiety, outpatient therapy, psychiatric hospitalizations, or Denies]
-
-SUBSTANCE ABUSE HISTORY: - [Tobacco, alcohol, illicit substance use history, cessation history, or Denies]
-
-Trauma Hx: [Trauma history or None]
-
-SOCIAL HISTORY/ EDUCATIONAL HX: - [Birthplace, family, military/employment, marriage/bereavement, relocations, snowbird history, local support system, hobbies/isolation]
-
-Legal Hx: - [Legal history or None]
-
-FAMILY PSYCHIATRIC HISTORY: - [Family mental health history or Denies]
-
-PAST MEDICAL HISTORY: - [Medical history, acute conditions, e.g. UTI, constipation, falls]
-
-DRUG ALLERGY: - 
-- [List all drug allergies or NKDA]
-
+CURRENT PSYCH MEDICATIONS: -
+CURRENT NON-PSYCH MEDICATIONS: -
+PAST PSYCH MEDICATIONS: -
+PAST PSYCHIATRIC HISTORY: -
+SUBSTANCE ABUSE HISTORY: -
+TRAUMA HISTORY: -
+SOCIAL HISTORY / EDUCATIONAL HISTORY: -
+LEGAL HISTORY: -
+FAMILY PSYCHIATRIC HISTORY: -
+PAST MEDICAL HISTORY: -
+DRUG ALLERGY: -
 Objective:
-Vital Signs: Height: Weight: (Pounds), BP: Pulse: Resp: 
-
- O: REVIEW OF SYSTEMS: 
-Constitutional: [Constitutional ROS]
-EYE: [Ophthalmologic ROS]
-CARDIOVASCULAR: [Cardiovascular ROS]
-RESPIRATORY: [Respiratory ROS]
-GASTROINTESTINAL: [GI ROS, e.g. constipation]
-Endocrine: [Endocrine ROS]
-MUSCULO-SKELETAL: [Musculoskeletal ROS, mobility, assistive devices]
-NEUROLOGICAL: [Orientation, headache, seizures, balance]
-
+Vital Signs:
+REVIEW OF SYSTEMS:
 Mental Status Exam:
-- Appearance: [Age-appropriate, assistive devices, sensory aids]
-- Behavior: [Cooperative, engaged, anxiety level]
-- Speech: [Clarity, coherence, rate, volume]
-- Mood: [Subjective mood description]
-- Affect: [Affective range, congruence, tearfulness]
-- Thought Process: [Linear, goal-directed]
-- Thought Content: [Focus of thought, SI/HI denial]
-- Cognition: [Orientation x3, short/long-term memory]
-- Insight: [Good / Fair / Poor]
-- Judgment: [Good / Fair / Poor]
-
-Assessment: 
-    1. [Numbered prioritized clinical recommendations, medication continuations, monitoring plans, family psychoeducation, fall prevention, and medical co-management.]
-
+Assessment:
 Plan
-Psychosocial/ Psychotherapeutic/ Behavioral Assessment (Therapy Add-on only): 
+Psychosocial/ Psychotherapeutic/ Behavioral Assessment (Therapy Add-on only):
+RETURN TO CLINIC:
 
-Type of therapy used: [] Motivational interviewing [] CBT [x] Supportive therapy 
-
-Intervention: [Intervention description, e.g. Supportive therapy]
-
-Total psychotherapy time: - [Duration in minutes]
-
-Target Symptoms: [Primary target symptoms addressed]
-Description: [Narrative summary of psychotherapeutic exploration, psychoeducation, and family support]
-
-Goal/Progress: [Summary of session goals and patient response]
-Treatment Goals: [x] decrease depressive sx [x] decrease anxiety sx [] decrease conflicts/ anger [] decrease psychosis [] decrease confusion [x] improve coping skills [] reduce negative bx [X] improve treatment compliance [] improve focus and attention [x] increase motivation [] decrease mood volatility [x] Improve sleep patterns [] decrease alcohol consumption [] decrease marijuana use [] decrease substance use
-Treatment Goals Measured by: [x] decrease episodes of emotional/ behavioral problems [x] improved compliance with treatment [] decrease need for PRN medications [x] positive interactions with peers/family [ x] increased participation in interactions [] Increased focus and energy [x ] Increased motivation [x] Healthy sleep patterns [x] Healthy eating patterns [] decreased mood volatility [ ] decreased alcohol consumption [ ] decreased marijuana use [] decreased substance use
-Progress Related to Goals: [] good [] fair [] minimal [x] assess at f/u
-Functional Status: [] good [x] fair [] poor
-Interactive Complexity (only use when therapy is coded): [] Maladaptive communication: [] cognitive deficits [] memory impaired [] limited insight [] repeated questions [] distractible [] argumentative [] denial of symptoms [] hearing impaired [] Caregiver/ Family Emotions or Behavior  
-Prognosis: [] good [] fair [x] guarded [] poor
-Disposition: Continue with follow-up care.
-- Discussed diagnosis, treatment, risks benefits side effects, and alternate treatment.
-- Medication, their effects, and side effects including metabolic, EPS, effect on the heart were discussed.
-- Risk of medication increases with substance abuse and drinking. Compliance was addressed.
-RETURN TO CLINIC: [ 4] Week(s) [] Month(s) [] PRN`,
-    editRules: `1. Transform raw psychiatric intake notes, conversational transcripts, or clinical summaries into a rigorous, third-person medical record ("The client is a...", "The patient reports...", "He states...").
-2. Accurately separate psychotropic medications (CURRENT PSYCH MEDICATIONS) from general medical treatments (CURRENT NON-PSYCH MEDICATIONS).
-3. Explicitly itemize all documented drug allergies under DRUG ALLERGY: - (e.g. Amoxicillin, Sulfamethoxazole/Trimethoprim) and highlight reported severe adverse reactions.
-4. Integrate collateral history from family members, case managers, or caregivers into HPI and the Psychotherapy Add-on plan with exact attribution.
-5. In Assessment, synthesize clinical decisions into a clean sequentially numbered list (1, 2, 3...) covering medication continuity, weekly monitoring check-ins, grief normalization, family dynamics, and fall prevention.
-6. Populate the Psychotherapy Add-on checklist with precise brackets ([x] for checked/active items, [] for unchecked items) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis.
-7. Preserve all clinical metrics, numbers, dates, ages, and medical details without hallucination or truncation.`,
-    masterPrompt: `You are an elite board-certified psychiatric documentation specialist. Transform raw patient encounter notes, clinical summaries, or intake transcripts into a standardized, audit-proof psychiatric diagnostic evaluation. Adhere strictly to the required section headers, Review of Systems, Mental Status Exam, numbered Assessment items, and Psychotherapy Add-on checklist. Return only the clinical document conforming to the formatting contract.`,
+Rules for each part:
+1. Keep every header verbatim, including the trailing colon and dash. Never rename, translate, reorder, merge, or omit a header.
+2. HISTORY OF PRESENT ILLNESS is one continuous third-person narrative paragraph — no bullets.
+3. CURRENT PSYCH MEDICATIONS, CURRENT NON-PSYCH MEDICATIONS, PAST PSYCH MEDICATIONS, and DRUG ALLERGY use "-" bullets, one item per line. Write "None" or "NKDA" when nothing is documented, and keep a documented adverse reaction attached to its drug.
+4. REVIEW OF SYSTEMS uses one line per organ system: Constitutional, EYE, CARDIOVASCULAR, RESPIRATORY, GASTROINTESTINAL, Endocrine, MUSCULO-SKELETAL, NEUROLOGICAL.
+5. Mental Status Exam uses "- " bullets in this order: Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment. Insight and Judgment read Good, Fair, or Poor.
+6. Assessment is a numbered list (1., 2., 3., …) of concrete clinical decisions, highest priority first.
+7. The Therapy Add-on block keeps every checkbox token as [x] or [ ] exactly as supplied, and never marks an item [x] unless the source supports it.
+8. Vital Signs keeps the supplied values in place; leave a value blank rather than estimating it.
+9. If the source does not document a required field, write [Not documented]. Never invent a value, date, dose, or diagnosis.`,
+    editRules: `1. Transform raw psychiatric intake notes, conversational transcripts, or clinical summaries into a rigorous third-person medical record ("The client is a…", "The patient reports…", "He states…").
+2. Never fabricate clinical content: no invented medications, doses, frequencies, laboratory values, dates, ages, diagnoses, or risk statements. Anything absent from the source becomes [Not documented].
+3. Preserve every reported fact in substance — numbers, units, dates, ages, quantities — and keep quoted patient language intact (e.g. "I can't sleep").
+4. Separate CURRENT PSYCH MEDICATIONS from CURRENT NON-PSYCH MEDICATIONS, and itemize every documented drug allergy under DRUG ALLERGY (or NKDA). Flag severe adverse reactions exactly as reported.
+5. Attribute collateral history to its source (family, caregiver, case manager) inside HPI and the Therapy Add-on plan; never blend collateral statements into the patient's own voice.
+6. Assessment: a sequentially numbered list (1, 2, 3…) covering medication continuity, monitoring, risk, family psychoeducation, fall prevention, and medical co-management.
+7. Populate the Therapy Add-on checklist with precise brackets ([x] active, [ ] inactive) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis, driven by the source.
+8. Preserve uncertainty: keep [inaudible], [crosstalk], and unclear values marked rather than resolving them silently.`,
+    masterPrompt: `You are an elite board-certified psychiatric documentation specialist. Convert the supplied encounter notes, clinical summary, or intake transcript into a standardized, audit-ready psychiatric diagnostic evaluation. Follow the required section headers, Review of Systems, Mental Status Exam, numbered Assessment, and Psychotherapy Add-on checklist exactly. Documentation integrity is non-negotiable: never invent, infer, or upgrade a clinical finding, and mark anything not documented as [Not documented]. Return only the clinical document — no commentary, no preamble, no explanation of these instructions.`,
     outputGuide: {
       title: "Psychiatric Diagnostic Evaluation Standard",
-      description: "Clinical documentation standards for psychiatric evaluations, Review of Systems, Mental Status Examination, and psychotherapy add-on records.",
-      speakerFormat: "Standardized medical record section headers (e.g., 'CHIEF COMPLAINT: -', 'HISTORY OF PRESENT ILLNESS: -', 'CURRENT PSYCH MEDICATIONS: -').",
-      paragraphRules: "Single comprehensive narrative block for HPI; categorized lists for medications and allergies; numbered entries for Assessment; bracketed checklist for Therapy Add-on.",
-      punctuationRules: "Standard medical documentation punctuation. Bullet points for medication lists and ROS categories.",
-      uncertaintyMarkers: "Record unknown dosages or unconfirmed strengths as reported; note patient uncertainty regarding exact dates or years.",
-      editorialNotes: "Clinical third-person voice. Precise separation of psychiatric vs non-psychiatric medications and strict allergy documentation.",
+      description: "Clinical documentation standards for psychiatric evaluations: required section order, Review of Systems, Mental Status Examination, medication and allergy separation, and the psychotherapy add-on record.",
+      speakerFormat: "Fixed uppercase clinical section headers (e.g. 'CHIEF COMPLAINT: -', 'HISTORY OF PRESENT ILLNESS: -', 'CURRENT PSYCH MEDICATIONS: -', 'Mental Status Exam:').",
+      paragraphRules: "One continuous third-person narrative paragraph for HPI; bulleted lists for medications, allergies, and MSE fields; one line per organ system for the Review of Systems; numbered entries for Assessment; bracketed checklist for the Therapy Add-on.",
+      punctuationRules: "Standard medical documentation punctuation. Keep the trailing colon-and-dash on each header exactly as written and bullet every list item with '-'.",
+      uncertaintyMarkers: "Preserve [inaudible] and [crosstalk]. Report unknown dosages, strengths, or dates exactly as reported, and write [Not documented] for required fields the source never covers.",
+      editorialNotes: "Clinical third-person voice. Strict separation of psychiatric vs non-psychiatric medications, explicit allergy documentation, and zero fabrication of clinical facts.",
       checks: [
         {
           id: "check-clinical-headers",
           label: "Clinical Section Headers Integrity",
-          description: "Verifies all required psychiatric sections are present in standard sequence.",
-          rule: "Standard section headers (CHIEF COMPLAINT, HPI, MEDICATIONS, ROS, MSE, Assessment, Plan).",
+          description: "Verifies every required psychiatric section is present, in the standard order.",
+          rule: "Required section headers appear in order: CHIEF COMPLAINT, HISTORY OF PRESENT ILLNESS, CURRENT PSYCH MEDICATIONS, CURRENT NON-PSYCH MEDICATIONS, PAST PSYCH MEDICATIONS, PAST PSYCHIATRIC HISTORY, SUBSTANCE ABUSE HISTORY, TRAUMA HISTORY, SOCIAL HISTORY, LEGAL HISTORY, FAMILY PSYCHIATRIC HISTORY, PAST MEDICAL HISTORY, DRUG ALLERGY, Objective, Vital Signs, REVIEW OF SYSTEMS, Mental Status Exam, Assessment, Plan, RETURN TO CLINIC.",
           category: "formatting",
+          expectation: {
+            kind: "headers",
+            headers: [
+              "CHIEF COMPLAINT",
+              "HISTORY OF PRESENT ILLNESS",
+              "CURRENT PSYCH MEDICATIONS",
+              "CURRENT NON-PSYCH MEDICATIONS",
+              "PAST PSYCH MEDICATIONS",
+              "PAST PSYCHIATRIC HISTORY",
+              "SUBSTANCE ABUSE HISTORY",
+              "TRAUMA HISTORY",
+              "SOCIAL HISTORY",
+              "LEGAL HISTORY",
+              "FAMILY PSYCHIATRIC HISTORY",
+              "PAST MEDICAL HISTORY",
+              "DRUG ALLERGY",
+              "Objective",
+              "Vital Signs",
+              "REVIEW OF SYSTEMS",
+              "Mental Status Exam",
+              "Assessment",
+              "Plan",
+              "RETURN TO CLINIC",
+            ],
+            // Abbreviations and EMR spellings seen in real encounter notes. The
+            // contract still asks for the canonical headers; the guard accepts
+            // the shorthand a clinician actually dictates.
+            aliases: {
+              "PAST PSYCHIATRIC HISTORY": ["PAST PSYCH HX", "PSYCHIATRIC HISTORY"],
+              "SUBSTANCE ABUSE HISTORY": ["SUBSTANCE USE HISTORY", "SUBSTANCE HX"],
+              "TRAUMA HISTORY": ["TRAUMA HX"],
+              "SOCIAL HISTORY": ["SOCIAL HX"],
+              "LEGAL HISTORY": ["LEGAL HX"],
+              // "Family Hx" alone is ambiguous (family medical vs psychiatric), so
+              // only the unambiguous psychiatric shorthand is accepted here.
+              "FAMILY PSYCHIATRIC HISTORY": ["FAMILY PSYCH HX", "FAMILY PSYCHIATRIC HX"],
+              "PAST MEDICAL HISTORY": ["MEDICAL HISTORY", "PAST MEDICAL HX"],
+              "REVIEW OF SYSTEMS": ["ROS"],
+              "Mental Status Exam": ["MSE"],
+              // No alias for RETURN TO CLINIC: "follow up" is ordinary prose and
+              // would make the disposition guard match a plan bullet instead.
+            },
+          },
         },
         {
           id: "check-meds-allergies",
           label: "Medication & Allergy Separation",
-          description: "Ensures psych and non-psych medications are cleanly categorized and drug allergies are itemized.",
-          rule: "Separate CURRENT PSYCH, NON-PSYCH, and DRUG ALLERGY sections.",
+          description: "Ensures psych and non-psych medications are cleanly categorized and the allergy line is always documented.",
+          rule: "Separate CURRENT PSYCH, CURRENT NON-PSYCH, and DRUG ALLERGY sections, with the allergy line present and bulleted (NKDA when nothing is documented).",
           category: "verbatim",
+          expectation: { kind: "regex", pattern: "^DRUG ALLERGY:\\s*-", flags: "m", hint: "the DRUG ALLERGY line must stay in place, with NKDA when nothing is documented" },
         },
         {
           id: "check-ros-mse",
           label: "Review of Systems & MSE Completeness",
-          description: "Validates standard Review of Systems organ systems and complete Mental Status Exam fields.",
-          rule: "Complete ROS and 10 MSE fields (Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment).",
+          description: "Validates the Review of Systems organ systems and a complete Mental Status Exam with rated insight and judgment.",
+          rule: "Complete ROS and 10 MSE fields (Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment), with Insight and Judgment rated Good, Fair, or Poor.",
           category: "structure",
+          expectation: { kind: "regex", pattern: "\\bInsight:\\s*(Good|Fair|Poor)", hint: "Insight and Judgment must be rated Good, Fair, or Poor" },
         },
         {
           id: "check-assessment-numbered",
           label: "Numbered Assessment List",
           description: "Ensures assessment items are sequentially numbered with concrete management steps.",
-          rule: "Numbered list (1., 2., 3...) in Assessment section.",
+          rule: "Numbered list (1., 2., 3…) in the Assessment section, at least three prioritized items.",
           category: "structure",
+          expectation: { kind: "numbered", minItems: 3 },
         },
         {
           id: "check-therapy-plan",
-          label: "Psychotherapy Add-on Checklist & Return to Clinic",
-          description: "Verifies bracketed checkbox format for treatment goals and explicit Return to Clinic timeframe.",
-          rule: "Checkbox format [x] / [] and RETURN TO CLINIC designation.",
+          label: "Psychotherapy Add-on Checklist",
+          description: "Verifies the bracketed checkbox format for treatment goals, measures, functional status, and prognosis.",
+          rule: "Checkbox tokens ([x] / [ ]) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis, with at least one active item.",
           category: "punctuation",
+          expectation: { kind: "checklist", minBoxes: 10, requireChecked: true },
+        },
+        {
+          id: "check-return-to-clinic",
+          label: "Return to Clinic & Disposition",
+          description: "Confirms the document closes with an explicit follow-up interval and disposition.",
+          rule: "RETURN TO CLINIC: with a Week(s) / Month(s) / PRN interval selected.",
+          category: "structure",
+          expectation: { kind: "regex", pattern: "RETURN TO CLINIC:", hint: "state the follow-up interval" },
+        },
+        {
+          id: "check-no-placeholders",
+          label: "Fabrication & Placeholder Guard",
+          description: "Blocks unfilled template text, TODOs, and fabricated markers from shipping as a clinical record.",
+          rule: "No [insert…], TBD, XXXX, or lorem ipsum placeholders; undocumented fields read [Not documented] instead.",
+          category: "verbatim",
+          expectation: { kind: "absence", pattern: "\\[\\s*(insert|todo|tbd|placeholder|your|unknown|missing)[^\\]]*\\]|\\bTBD\\b|lorem ipsum|\\bX{3,}\\b", hint: "unfilled template text must never ship as a clinical record" },
         },
       ],
     },
@@ -401,9 +465,9 @@ Never omit words, names, legal terminology, or hesitation markers.`,
       uncertaintyMarkers: "Strict notation: [inaudible hh:mm:ss], [crosstalk], [unintelligible].",
       editorialNotes: "Verbatim priority: preserve false starts that carry evidentiary value.",
       checks: [
-        { id: "cv-speakers", label: "Speaker Turn Integrity", description: "Every speaker exchange has distinct attribution.", rule: "Explicit speaker tag for every utterance.", category: "speaker" },
+        { id: "cv-speakers", label: "Speaker Turn Integrity", description: "Every speaker exchange has distinct attribution.", rule: "Explicit speaker tag for every utterance.", category: "speaker", expectation: { kind: "speakerLabels", pattern: "^[A-Z][A-Z0-9 .'-]{0,40}:\\s", minTurns: 2 } },
         { id: "cv-inaudible", label: "Timestamped Marker Audit", description: "Audit all inaudible and crosstalk timestamps.", rule: "Verify [inaudible hh:mm:ss] format.", category: "verbatim" },
-        { id: "cv-fidelity", label: "Verbatim Preservation", description: "Zero paraphrasing or word substitution.", rule: "Retain exact testimony diction.", category: "verbatim" },
+        { id: "cv-fidelity", label: "Verbatim Preservation", description: "Zero paraphrasing or word substitution.", rule: "Retain exact testimony diction.", category: "verbatim", expectation: { kind: "absence", pattern: "\\b(in summary|to summarize|TL;DR|paraphrased)\\b", hint: "a verbatim record must never contain summary language" } },
         { id: "cv-punct", label: "Standard Punctuation", description: "Precise sentence boundaries.", rule: "Standard legal transcription punctuation.", category: "punctuation" },
       ],
     },
@@ -428,9 +492,9 @@ Clean up colloquial rambling while preserving the exact technical and business f
       uncertaintyMarkers: "Mark unclear terms with [phonetic: term] or [unclear].",
       editorialNotes: "Highlight clarity and quantitative accuracy.",
       checks: [
-        { id: "exec-speakers", label: "Participant Attribution", description: "Names and roles accurately attached.", rule: "Consistent NAME (ROLE): format.", category: "speaker" },
-        { id: "exec-metrics", label: "Figures & Numbers Check", description: "Metrics, dates, and currency retained accurately.", rule: "No alteration of numbers or dates.", category: "verbatim" },
-        { id: "exec-clarity", label: "Action Item Clarity", description: "Decisions and statements are unambiguous.", rule: "Concise business phrasing.", category: "structure" },
+        { id: "exec-speakers", label: "Participant Attribution", description: "Names and roles accurately attached.", rule: "Consistent NAME (ROLE): format.", category: "speaker", expectation: { kind: "speakerLabels", minTurns: 2 } },
+        { id: "exec-metrics", label: "Figures & Numbers Check", description: "Metrics, dates, and currency retained accurately.", rule: "No alteration of numbers or dates.", category: "verbatim", expectation: { kind: "regex", pattern: "\\d", minMatches: 1, hint: "at least one figure, date, or metric must survive the edit" } },
+        { id: "exec-clarity", label: "Action Item Clarity", description: "Decisions and statements are unambiguous.", rule: "Concise business phrasing.", category: "structure", expectation: { kind: "maxWordsPerParagraph", max: 150 } },
       ],
     },
   },
@@ -454,9 +518,9 @@ Ensure proper spelling of cultural references, brand names, and guest bios.`,
       uncertaintyMarkers: "Note [laughter], [applause], [music] when audio context requires.",
       editorialNotes: "Maintain voice cadence and punchy delivery.",
       checks: [
-        { id: "pod-speakers", label: "Host/Guest Continuity", description: "Clean speaker alternation.", rule: "Proper HOST / GUEST labeling.", category: "speaker" },
-        { id: "pod-rhythm", label: "Paragraph Flow", description: "Punchy breaks for easy skimming.", rule: "Max 3-4 sentences per paragraph.", category: "structure" },
-        { id: "pod-audio-cues", label: "Audio Cue Audit", description: "Validate atmospheric brackets [laughter], [music].", rule: "Preserve narrative sound tags.", category: "formatting" },
+        { id: "pod-speakers", label: "Host/Guest Continuity", description: "Clean speaker alternation.", rule: "Proper HOST / GUEST labeling.", category: "speaker", expectation: { kind: "speakerLabels", minTurns: 2 } },
+        { id: "pod-rhythm", label: "Paragraph Flow", description: "Punchy breaks for easy skimming.", rule: "Max 3-4 sentences per paragraph.", category: "structure", expectation: { kind: "maxWordsPerParagraph", max: 110 } },
+        { id: "pod-audio-cues", label: "Audio Cue Audit", description: "Validate atmospheric brackets [laughter], [music].", rule: "Preserve narrative sound tags.", category: "formatting", expectation: { kind: "absence", pattern: "\\b(inaudible|unintelligible)\\b(?!\\s*\\])", hint: "audio context must stay bracketed, never left as loose text" } },
       ],
     },
   },
@@ -472,7 +536,7 @@ export const DEFAULT_CONFIG: WorkflowConfig = {
   masterPrompt: DEFAULT_TEMPLATES[0].masterPrompt,
   outputGuide: DEFAULT_OUTPUT_GUIDE,
   primaryModel: "nvidia/nemotron-3.5-lightning:free",
-  fallbackModels: ["nvidia/nemotron-3.5-lightning", "nvidia/nemotron-3-ultra-550b-a55b", "google/gemma-4-26b-a4b-it:free", "gemini-2.0-flash"],
+  fallbackModels: ["nvidia/nemotron-3.5-lightning", "nvidia/nemotron-3-ultra-550b-a55b", "deepseek-flash", "google/gemma-4-26b-a4b-it:free", "gemini-2.0-flash"],
   contextWindow: 32768,
   batchTokens: 2000,
   overlapTokens: 120,
@@ -511,6 +575,7 @@ export function normalizeOutputGuide(value: unknown): OutputGuide {
           category: (["speaker", "structure", "punctuation", "verbatim", "formatting"].includes(c.category as string)
             ? c.category
             : "structure") as OutputGuideCheck["category"],
+          ...(normalizeExpectation(c.expectation) ? { expectation: normalizeExpectation(c.expectation) } : {}),
         }))
     : [...DEFAULT_OUTPUT_GUIDE.checks];
 
@@ -524,6 +589,129 @@ export function normalizeOutputGuide(value: unknown): OutputGuide {
     editorialNotes: typeof candidate.editorialNotes === "string" ? candidate.editorialNotes : DEFAULT_OUTPUT_GUIDE.editorialNotes,
     checks: checks.length ? checks : [...DEFAULT_OUTPUT_GUIDE.checks],
   };
+}
+
+/** Validate a serialized expectation. Invalid or unchecked patterns are dropped. */
+export function normalizeExpectation(value: unknown): OutputGuideExpectation | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Partial<OutputGuideExpectation> & { kind?: string };
+  const str = (input: unknown) => (typeof input === "string" ? input.trim() : "");
+  const num = (input: unknown, fallback?: number) => {
+    const parsed = Number(input);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+  const flags = (input: unknown) => {
+    const clean = str(input).replace(/[^gimsuy]/g, "");
+    return clean.includes("g") ? clean : `${clean}g`;
+  };
+  const validPattern = (pattern: string, rawFlags: string) => {
+    try {
+      new RegExp(pattern, rawFlags);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  switch (candidate.kind) {
+    case "headers": {
+      const headers = Array.isArray((candidate as { headers?: unknown }).headers)
+        ? ((candidate as { headers: unknown[] }).headers)
+            .filter((h): h is string => typeof h === "string" && h.trim().length > 0)
+            .map((h) => h.trim().slice(0, 120))
+            .slice(0, 60)
+        : [];
+      if (!headers.length) return undefined;
+      // Real clinical documents abbreviate ("Trauma Hx", "ROS") and arrive from
+      // EMR exports with SOAP prefixes. Aliases keep the ordered-header guard
+      // honest without failing a correctly sectioned note.
+      const rawAliases = (candidate as { aliases?: unknown }).aliases;
+      const aliases: Record<string, string[]> = {};
+      if (rawAliases && typeof rawAliases === "object" && !Array.isArray(rawAliases)) {
+        for (const [key, value] of Object.entries(rawAliases as Record<string, unknown>)) {
+          if (!Array.isArray(value)) continue;
+          const canonical = headers.find((header) => header.toUpperCase() === key.trim().toUpperCase());
+          if (!canonical) continue;
+          const variants = value
+            .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+            .map((entry) => entry.trim().slice(0, 120))
+            .slice(0, 8);
+          if (variants.length) aliases[canonical] = variants;
+        }
+      }
+      return {
+        kind: "headers",
+        headers,
+        caseSensitive: Boolean((candidate as { caseSensitive?: unknown }).caseSensitive),
+        ...(Object.keys(aliases).length ? { aliases } : {}),
+      };
+    }
+    case "numbered":
+      return { kind: "numbered", minItems: num((candidate as { minItems?: unknown }).minItems, 1) || 1 };
+    case "checklist":
+      return {
+        kind: "checklist",
+        minBoxes: num((candidate as { minBoxes?: unknown }).minBoxes, 1) || 1,
+        requireChecked: Boolean((candidate as { requireChecked?: unknown }).requireChecked),
+      };
+    case "regex":
+    case "absence": {
+      const pattern = str((candidate as { pattern?: unknown }).pattern);
+      if (!pattern) return undefined;
+      const appliedFlags = flags((candidate as { flags?: unknown }).flags);
+      if (!validPattern(pattern, appliedFlags)) return undefined;
+      return candidate.kind === "regex"
+        ? {
+            kind: "regex",
+            pattern,
+            flags: appliedFlags,
+            minMatches: num((candidate as { minMatches?: unknown }).minMatches, 1) || 1,
+            hint: str((candidate as { hint?: unknown }).hint) || undefined,
+          }
+        : {
+            kind: "absence",
+            pattern,
+            flags: appliedFlags,
+            hint: str((candidate as { hint?: unknown }).hint) || undefined,
+          };
+    }
+    case "speakerLabels":
+      return {
+        kind: "speakerLabels",
+        pattern: str((candidate as { pattern?: unknown }).pattern) || undefined,
+        minTurns: num((candidate as { minTurns?: unknown }).minTurns, 1) || 1,
+      };
+    case "maxWordsPerParagraph":
+      return { kind: "maxWordsPerParagraph", max: num((candidate as { max?: unknown }).max, 150) || 150 };
+    case "minLength":
+      return { kind: "minLength", characters: num((candidate as { characters?: unknown }).characters, 1) || 1 };
+    default:
+      return undefined;
+  }
+}
+
+/** Human-readable description of an expectation, used in prompts and the UI. */
+export function describeExpectation(expectation: OutputGuideExpectation): string {
+  switch (expectation.kind) {
+    case "headers":
+      return `Required section headers, in order: ${expectation.headers.join(" → ")}`;
+    case "numbered":
+      return `At least ${expectation.minItems} numbered line(s) (1., 2., 3.…)`;
+    case "checklist":
+      return `At least ${expectation.minBoxes} bracketed checkbox token(s) ([x] / [ ])${expectation.requireChecked ? ", with at least one checked" : ""}`;
+    case "regex":
+      return `Must match /${expectation.pattern}/ at least ${expectation.minMatches} time(s)${expectation.hint ? ` — ${expectation.hint}` : ""}`;
+    case "absence":
+      return `Must not match /${expectation.pattern}/${expectation.hint ? ` — ${expectation.hint}` : ""}`;
+    case "speakerLabels":
+      return `At least ${expectation.minTurns} speaker turn(s) labelled with an uppercase tag, colon, and space`;
+    case "maxWordsPerParagraph":
+      return `No paragraph above ${expectation.max} words`;
+    case "minLength":
+      return `Document of at least ${expectation.characters} character(s)`;
+    default:
+      return "";
+  }
 }
 
 export function normalizeConfig(value: unknown): WorkflowConfig {
@@ -614,25 +802,111 @@ export function chunkTranscript(text: string, targetTokens: number) {
   return batches.length ? batches : [];
 }
 
-export function sectionChecks(text: string): SectionCheck[] {
-  const sections = (text || "")
+/**
+ * Cross-check the delivered output one section at a time.
+ *
+ * With no guide this walks blank-line paragraphs. With a guide that declares
+ * required headers, it walks the template's own sections instead, so a clinical
+ * evaluation is reviewed per section and any missing section is reported as a
+ * guard failure rather than being silently absent from the report.
+ */
+export function sectionChecks(text: string, guide?: OutputGuide): SectionCheck[] {
+  const clean = (text || "").trim();
+  const headerExpectation = guide?.checks
+    .map((check) => check.expectation)
+    .find((expectation): expectation is Extract<OutputGuideExpectation, { kind: "headers" }> => expectation?.kind === "headers");
+
+  if (headerExpectation && clean) {
+    const headers = headerExpectation.headers;
+    // Same tolerant, line-anchored matching the delivery audit uses, so the
+    // per-section walk and the guard verdict can never disagree.
+    const found = findHeaderPositions(clean, headerExpectation)
+      .filter((entry) => entry.index >= 0)
+      .sort((a, b) => a.index - b.index);
+
+    if (found.length) {
+      const checks: SectionCheck[] = found.map((entry, position) => {
+        const next = found[position + 1];
+        const body = clean.slice(entry.index, next ? next.index : undefined).trim();
+        return buildSectionCheck(position + 1, body, entry.header, guide);
+      });
+
+      const missing = headerExpectation.headers.filter((header) => !found.some((entry) => entry.header === header));
+      missing.forEach((header, index) => {
+        checks.push({
+          section: found.length + index + 1,
+          label: header,
+          status: "review",
+          score: 0,
+          note: `Required section "${header}" is missing from the delivered document.`,
+          flags: [`Missing required section: ${header}`],
+        });
+      });
+
+      return checks;
+    }
+
+    // Nothing matched: report every required section as missing instead of
+    // pretending the output has clean paragraph structure.
+    return headers.map((header, index) => ({
+      section: index + 1,
+      label: header,
+      status: "review" as const,
+      score: 0,
+      note: `Required section "${header}" is missing from the delivered document.`,
+      flags: [`Missing required section: ${header}`],
+    }));
+  }
+
+  const sections = clean
     .split(/\n\s*\n/)
     .map((section) => section.trim())
     .filter(Boolean);
-  return sections.map((section, index) => {
-    const flags: string[] = [];
-    if (/\[(?:inaudible|crosstalk|unintelligible|unknown)\]|\bTODO\b|\?{3,}/i.test(section)) flags.push("Unresolved transcript marker");
-    if (/\b(\w+)\s+\1\b/i.test(section)) flags.push("Repeated word");
-    if (section.length > 300 && !/[.!?…]["')\]]?$/.test(section)) flags.push("Long sentence needs a punctuation review");
-    if (section.length > 40 && !/[.!?…"')\]]$/.test(section)) flags.push("Check ending punctuation");
-    return {
-      section: index + 1,
-      status: flags.length ? "review" : "pass",
-      score: Math.max(0, 100 - flags.length * 22),
-      note: flags.length ? flags.join(" · ") : "Structure and transcript markers look clean",
-      flags,
-    };
-  });
+  return sections.map((section, index) => buildSectionCheck(index + 1, section, undefined, guide));
+}
+
+function buildSectionCheck(section: number, body: string, label: string | undefined, guide?: OutputGuide): SectionCheck {
+  const trimmed = body.trim();
+  const flags: string[] = [];
+
+  if (!trimmed) flags.push(label ? `Section "${label}" is empty` : "Empty section");
+  if (/\[(?:inaudible|crosstalk|unintelligible|unknown)\b[^\]]*\]|\bTODO\b|\?{3,}/i.test(trimmed)) {
+    flags.push("Unresolved transcript marker");
+  }
+  if (/\b(\w+)\s+\1\b/i.test(trimmed)) flags.push("Repeated word");
+
+  // Guide-declared guards that hold for any single section. Document-level
+  // expectations (required headers, numbering, checklists) are audited once
+  // against the whole output, not repeated on every section.
+  for (const check of guide?.checks || []) {
+    const expectation = check.expectation;
+    if (!expectation || expectation.kind !== "absence" || !trimmed) continue;
+    const result = evaluateExpectation(trimmed, expectation);
+    if (result && !result.ok) flags.push(`${check.label}: ${result.message}`);
+  }
+
+  if (expectationFreeHeuristics(trimmed)) {
+    if (trimmed.length > 300 && !/[.!?…]["')\]]?$/.test(trimmed)) flags.push("Long sentence needs a punctuation review");
+    if (trimmed.length > 40 && !/[.!?…"')\]]$/.test(trimmed)) flags.push("Check ending punctuation");
+  }
+
+  const score = Math.max(0, 100 - flags.length * 22);
+  return {
+    section,
+    ...(label ? { label } : {}),
+    status: flags.length ? "review" : "pass",
+    score,
+    note: flags.length ? flags.join(" · ") : `${label ? `Section "${label}"` : "Structure"} and transcript markers look clean`,
+    flags,
+  };
+}
+
+/** Punctuation heuristics only apply to prose sections, not checklist/table ones. */
+function expectationFreeHeuristics(section: string): boolean {
+  if (!section) return false;
+  const lines = section.split("\n").map((line) => line.trim()).filter(Boolean);
+  const checklistLines = lines.filter((line) => /^[-*•]?\s*(\[[ xX]?\]|\(?[xX]?\)?)\s*/.test(line) || /\[\s*[xX]?\s*\]/.test(line));
+  return checklistLines.length < Math.max(1, Math.ceil(lines.length * 0.6));
 }
 
 export type GuideAuditReport = {
@@ -643,14 +917,213 @@ export type GuideAuditReport = {
   message: string;
   count: number;
   samples: string[];
+  /** Present when the check ran a machine-checkable expectation. */
+  expectation?: string;
 };
 
-export function auditOutputAgainstGuide(text: string, guide: OutputGuide): {
+export type GuideAuditResult = {
   overallScore: number;
   passedCount: number;
   reviewCount: number;
   reports: GuideAuditReport[];
-} {
+};
+
+function escapeForRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+type HeaderExpectation = Extract<OutputGuideExpectation, { kind: "headers" }>;
+
+/**
+ * Line-anchored matcher for a required section header.
+ *
+ * Real documents prefix a header with whitespace, markdown emphasis, list
+ * bullets, EMR SOAP letters ("O: REVIEW OF SYSTEMS:") or numbering, and real
+ * clinicians abbreviate ("Trauma Hx", "ROS"). All of that is accepted; an
+ * ordinary prose mention of the word is not, because the match must start a line.
+ */
+function findHeaderPositions(clean: string, expectation: HeaderExpectation): { header: string; index: number }[] {
+  const flags = expectation.caseSensitive ? "m" : "im";
+  return expectation.headers.map((header) => {
+    const alternatives = [header, ...(expectation.aliases?.[header] || [])].map(escapeForRegex);
+    // The header must not run straight into another word ("SOCIAL HISTORY/" and
+    // "SOCIAL HISTORY: -" both count, "Planning" does not match PLAN).
+    const pattern = `^[ \\t>*_#\\u2022\\-]*(?:(?:[SOAP])[.):]\\s*)?(?:\\d{1,2}\\s*[.)]\\s*)?(?:${alternatives.join("|")})(?![A-Za-z0-9])`;
+    const regex = safeRegex(pattern, flags);
+    if (!regex) return { header, index: -1 };
+    const match = regex.exec(clean);
+    return { header, index: match ? match.index : -1 };
+  });
+}
+
+function safeRegex(pattern: string, flags = "g"): RegExp | null {
+  try {
+    return new RegExp(pattern, flags.includes("g") ? flags : `${flags}g`);
+  } catch {
+    return null;
+  }
+}
+
+function trimSamples(values: string[], length = 100) {
+  return Array.from(new Set(values.map((v) => (v.length > length ? `${v.slice(0, length)}…` : v)))).slice(0, 4);
+}
+
+/**
+ * Evaluate a single machine-checkable expectation against the delivered output.
+ * Returns null when the expectation cannot be evaluated (never silently passes).
+ */
+export function evaluateExpectation(
+  text: string,
+  expectation: OutputGuideExpectation
+): { ok: boolean; message: string; count: number; samples: string[] } | null {
+  const clean = text || "";
+  const paragraphs = clean.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+
+  switch (expectation.kind) {
+    case "headers": {
+      // Headers are matched at the start of a line (markdown emphasis and SOAP
+      // prefixes tolerated) so an ordinary mention of "the plan" inside prose is
+      // never mistaken for the PLAN section.
+      const positions = findHeaderPositions(clean, expectation);
+      const missing = positions.filter((entry) => entry.index === -1).map((entry) => entry.header);
+      const present = positions.filter((entry) => entry.index >= 0);
+      const outOfOrder = present
+        .filter((entry, position) => position > 0 && entry.index < present[position - 1].index)
+        .map((entry) => entry.header);
+      if (missing.length) {
+        return {
+          ok: false,
+          message: `Missing required section(s): ${missing.join(", ")}.`,
+          count: missing.length,
+          samples: missing,
+        };
+      }
+      if (outOfOrder.length) {
+        return {
+          ok: false,
+          message: `Section(s) out of the required order: ${outOfOrder.join(", ")}.`,
+          count: outOfOrder.length,
+          samples: outOfOrder,
+        };
+      }
+      return { ok: true, message: `All ${expectation.headers.length} required sections are present in order.`, count: 0, samples: [] };
+    }
+
+    case "numbered": {
+      const required = expectation.minItems || 1;
+      const matches = clean.match(/^[ \t]*\d{1,2}[.)]\s+\S/gm) || [];
+      if (matches.length < required) {
+        return {
+          ok: false,
+          message: `Found ${matches.length} numbered item(s); the contract requires at least ${required}.`,
+          count: matches.length,
+          samples: [],
+        };
+      }
+      return { ok: true, message: `${matches.length} numbered item(s) present.`, count: 0, samples: [] };
+    }
+
+    case "checklist": {
+      const required = expectation.minBoxes || 1;
+      const boxes = clean.match(/\[\s*[xX]?\s*\]/g) || [];
+      const checked = clean.match(/\[\s*[xX]\s*\]/g) || [];
+      if (boxes.length < required) {
+        return {
+          ok: false,
+          message: `Found ${boxes.length} bracketed checkbox token(s); the contract requires at least ${required}.`,
+          count: boxes.length,
+          samples: [],
+        };
+      }
+      if (expectation.requireChecked && checked.length === 0) {
+        return {
+          ok: false,
+          message: "Checkbox tokens are present but none are marked [x], so no active item is recorded.",
+          count: 0,
+          samples: Array.from(new Set(boxes)).slice(0, 4),
+        };
+      }
+      return { ok: true, message: `${boxes.length} checkbox token(s) present (${checked.length} checked).`, count: 0, samples: [] };
+    }
+
+    case "regex": {
+      const regex = safeRegex(expectation.pattern, expectation.flags || "g");
+      if (!regex) return null;
+      const matches = clean.match(regex) || [];
+      if (matches.length < (expectation.minMatches || 1)) {
+        return {
+          ok: false,
+          message: `Pattern /${expectation.pattern}/ matched ${matches.length} time(s); ${expectation.minMatches || 1} required${expectation.hint ? ` (${expectation.hint})` : ""}.`,
+          count: matches.length,
+          samples: [],
+        };
+      }
+      return { ok: true, message: `Pattern /${expectation.pattern}/ matched ${matches.length} time(s).`, count: 0, samples: [] };
+    }
+
+    case "absence": {
+      const regex = safeRegex(expectation.pattern, expectation.flags || "g");
+      if (!regex) return null;
+      const matches = clean.match(regex) || [];
+      if (matches.length) {
+        return {
+          ok: false,
+          message: `${matches.length} forbidden token(s) found${expectation.hint ? ` (${expectation.hint})` : ""}.`,
+          count: matches.length,
+          samples: trimSamples(matches),
+        };
+      }
+      return { ok: true, message: "No forbidden placeholder or unresolved token found.", count: 0, samples: [] };
+    }
+
+    case "speakerLabels": {
+      const pattern = expectation.pattern ? safeRegex(expectation.pattern, "gm") : null;
+      const turns = pattern
+        ? (clean.match(pattern) || []).length
+        : paragraphs.filter((p) => /^[A-Z0-9][A-Z0-9 _-]{0,30}:\s/.test(p)).length;
+      const required = expectation.minTurns || 1;
+      if (turns < required) {
+        return {
+          ok: false,
+          message: `Found ${turns} properly labelled speaker turn(s); at least ${required} required.`,
+          count: turns,
+          samples: paragraphs.slice(0, 2).map((p) => p.slice(0, 80)),
+        };
+      }
+      return { ok: true, message: `${turns} speaker turn(s) labelled consistently.`, count: 0, samples: [] };
+    }
+
+    case "maxWordsPerParagraph": {
+      const long = paragraphs.filter((p) => p.split(/\s+/).filter(Boolean).length > expectation.max);
+      if (long.length) {
+        return {
+          ok: false,
+          message: `${long.length} paragraph(s) exceed ${expectation.max} words.`,
+          count: long.length,
+          samples: trimSamples(long),
+        };
+      }
+      return { ok: true, message: `Every paragraph stays within ${expectation.max} words.`, count: 0, samples: [] };
+    }
+
+    case "minLength": {
+      if (clean.length < expectation.characters) {
+        return {
+          ok: false,
+          message: `Delivered ${clean.length} character(s); the contract requires at least ${expectation.characters}.`,
+          count: clean.length,
+          samples: [],
+        };
+      }
+      return { ok: true, message: `${clean.length} characters delivered.`, count: 0, samples: [] };
+    }
+
+    default:
+      return null;
+  }
+}
+
+export function auditOutputAgainstGuide(text: string, guide: OutputGuide): GuideAuditResult {
   const clean = (text || "").trim();
   if (!clean) {
     return {
@@ -673,6 +1146,25 @@ export function auditOutputAgainstGuide(text: string, guide: OutputGuide): {
   const reports: GuideAuditReport[] = [];
 
   for (const check of guide.checks) {
+    // An explicit expectation is the contract: evaluate it exactly and skip the
+    // category heuristic, so a template can never pass on a vague heuristic.
+    if (check.expectation) {
+      const result = evaluateExpectation(clean, check.expectation);
+      if (result) {
+        reports.push({
+          checkId: check.id,
+          label: check.label,
+          status: result.ok ? "pass" : "review",
+          score: result.ok ? 100 : Math.max(30, 100 - result.count * 20),
+          message: result.message,
+          count: result.count,
+          samples: result.samples,
+          expectation: describeExpectation(check.expectation),
+        });
+        continue;
+      }
+    }
+
     if (check.category === "speaker") {
       // Check speaker labels
       const speakerPattern = /^([A-Z0-9 _-]{1,30})\s*:/;

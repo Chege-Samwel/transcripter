@@ -17,6 +17,14 @@ import {
   type WorkflowConfig,
   type WorkflowTemplate,
 } from "../../lib/workflow";
+import {
+  applyTemplateToConfig,
+  auditTemplate,
+  guardSummary,
+  resolveTemplateId,
+  templateDrift,
+  type TemplateAudit,
+} from "../../lib/template-guards";
 import type { Account } from "../../lib/types";
 
 function Icon({ name, size = 18 }: { name: string; size?: number }) {
@@ -54,6 +62,7 @@ export default function SettingsClient({ account }: { account?: Account }) {
 
   // Template workflow library & drafting
   const [templates, setTemplates] = useState<WorkflowTemplate[]>(DEFAULT_TEMPLATES);
+  const [templateGuards, setTemplateGuards] = useState<Record<string, TemplateAudit>>({});
   const [activeTemplateId, setActiveTemplateId] = useState<string>("tpl-standard-editorial");
   const [isDraftingTemplate, setIsDraftingTemplate] = useState(false);
   const [templateDraft, setTemplateDraft] = useState<Partial<WorkflowTemplate>>({
@@ -78,10 +87,13 @@ export default function SettingsClient({ account }: { account?: Account }) {
         const wfData = (await wfRes.json()) as {
           workflow?: { config?: unknown; result?: string; crossChecks?: SectionCheck[] } | null;
         };
-        const tplData = (await tplRes.json()) as { templates?: WorkflowTemplate[] };
+        const tplData = (await tplRes.json()) as { templates?: WorkflowTemplate[]; guards?: Record<string, TemplateAudit> };
 
         if (!cancelled && Array.isArray(tplData.templates) && tplData.templates.length) {
           setTemplates(tplData.templates);
+          setTemplateGuards(
+            tplData.guards || Object.fromEntries(tplData.templates.map((template) => [template.id, auditTemplate(template)])),
+          );
         }
 
         if (!cancelled && wfData.workflow) {
@@ -90,6 +102,11 @@ export default function SettingsClient({ account }: { account?: Account }) {
           setResult(wfData.workflow.result || "");
           setCrossChecks(Array.isArray(wfData.workflow.crossChecks) ? wfData.workflow.crossChecks : []);
           if (loadedCfg.templateId) setActiveTemplateId(loadedCfg.templateId);
+          // Selection guard: repair a templateId that no longer resolves.
+          if (Array.isArray(tplData.templates) && tplData.templates.length) {
+            const resolved = resolveTemplateId(tplData.templates, loadedCfg.templateId);
+            if (resolved.id) setActiveTemplateId(resolved.id);
+          }
         } else if (!cancelled) {
           loadLocal();
         }
@@ -213,24 +230,37 @@ export default function SettingsClient({ account }: { account?: Account }) {
 
   // Template handling
   function applyTemplate(tpl: WorkflowTemplate) {
+    const audit = templateGuards[tpl.id] || auditTemplate(tpl);
+    if (!audit.ok) {
+      const blocked = audit.issues.filter((issue) => issue.level === "error").map((issue) => issue.message);
+      setNotice({ tone: "error", message: `"${tpl.name}" is blocked by the template guard: ${blocked.join(" ")}` });
+      return;
+    }
+    const application = applyTemplateToConfig(config, tpl);
     setActiveTemplateId(tpl.id);
-    setConfig((curr) => ({
-      ...curr,
-      templateId: tpl.id,
-      formatRules: tpl.formatRules,
-      editRules: tpl.editRules,
-      masterPrompt: tpl.masterPrompt,
-      outputGuide: { ...tpl.outputGuide, checks: [...tpl.outputGuide.checks] },
-    }));
+    setConfig(application.config);
+    const warnings = audit.issues.filter((issue) => issue.level === "warning");
+    const kept = application.kept.length ? ` Kept your existing ${application.kept.join(", ").toLowerCase()} (blank in the template).` : "";
     setNotice({
-      tone: "success",
-      message: `Applied template "${tpl.name}". Rules and Output Guide are now active. Save to persist.`,
+      tone: warnings.length ? "info" : "success",
+      message: warnings.length
+        ? `Applied "${tpl.name}" with ${warnings.length} guard warning(s): ${warnings.map((issue) => issue.message).join(" ")}${kept}`
+        : `Applied template "${tpl.name}". ${audit.guardedChecks}/${audit.totalChecks} output guards are armed.${kept}`,
     });
   }
 
   async function saveCustomTemplate() {
     if (!templateDraft.name?.trim()) {
       setNotice({ tone: "error", message: "Template name is required." });
+      return;
+    }
+    // Local guard first: never send a template that would erase the contract.
+    const draftAudit = auditTemplate({ ...templateDraft, outputGuide: normalizeOutputGuide(templateDraft.outputGuide || config.outputGuide) });
+    if (!draftAudit.ok) {
+      setNotice({
+        tone: "error",
+        message: `Template guard blocked this draft: ${draftAudit.issues.filter((issue) => issue.level === "error").map((issue) => issue.message).join(" ")}`,
+      });
       return;
     }
     const templateToSave: WorkflowTemplate = {
@@ -250,15 +280,30 @@ export default function SettingsClient({ account }: { account?: Account }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(templateToSave),
       });
-      const data = (await res.json()) as { ok?: boolean; template?: WorkflowTemplate; error?: string };
+      const data = (await res.json()) as {
+        ok?: boolean;
+        template?: WorkflowTemplate;
+        error?: string;
+        audit?: TemplateAudit;
+        warnings?: { message: string }[];
+      };
       if (data.ok && data.template) {
         setTemplates((prev) => {
           const filtered = prev.filter((t) => t.id !== data.template!.id);
           return [...filtered, data.template!];
         });
+        setTemplateGuards((prev) => ({
+          ...prev,
+          [data.template!.id]: data.audit || auditTemplate(data.template!),
+        }));
         setActiveTemplateId(data.template.id);
         setIsDraftingTemplate(false);
-        setNotice({ tone: "success", message: `Template "${data.template.name}" saved to your workspace library.` });
+        setNotice({
+          tone: data.warnings?.length ? "info" : "success",
+          message: data.warnings?.length
+            ? `Template "${data.template.name}" saved with ${data.warnings.length} guard warning(s): ${data.warnings.map((w) => w.message).join(" ")}`
+            : `Template "${data.template.name}" saved to your workspace library with ${data.audit?.guardedChecks ?? 0} armed output guard(s).`,
+        });
       } else {
         setNotice({ tone: "error", message: data.error || "Could not save custom template." });
       }
@@ -357,6 +402,9 @@ export default function SettingsClient({ account }: { account?: Account }) {
   }
 
   const activeTemplate = templates.find((t) => t.id === activeTemplateId) || templates[0];
+  const activeGuard = templateGuards[activeTemplate?.id || ""] || (activeTemplate ? auditTemplate(activeTemplate) : undefined);
+  const drift = templateDrift(config, activeTemplate);
+  const guideGuards = guardSummary(config.outputGuide);
 
   return (
     <main className="settings-page">
@@ -486,6 +534,30 @@ export default function SettingsClient({ account }: { account?: Account }) {
                       </div>
                       <h3 style={{ margin: "4px 0 6px", fontSize: "14px", letterSpacing: "-.02em" }}>{tpl.name}</h3>
                       <p style={{ margin: 0, fontSize: "11px", color: "var(--muted)", lineHeight: "1.5" }}>{tpl.description}</p>
+                      {(() => {
+                        const audit = templateGuards[tpl.id] || auditTemplate(tpl);
+                        const tone =
+                          audit.state === "blocked" ? { bg: "#fdecea", ink: "#8a1c0d" }
+                          : audit.state === "review" ? { bg: "#fff8e1", ink: "#8a5300" }
+                          : { bg: "#e6f4ea", ink: "#137333" };
+                        const label =
+                          audit.state === "blocked" ? `${audit.issues.filter((i) => i.level === "error").length} blocking issue(s)`
+                          : audit.state === "review" ? `${audit.issues.length} guard warning(s)`
+                          : "Guard ready";
+                        return (
+                          <div style={{ marginTop: "8px" }}>
+                            <span
+                              title={audit.issues.map((issue) => issue.message).join("\n") || "Contract complete and guarded."}
+                              style={{ display: "inline-block", fontSize: "9.5px", fontWeight: 700, padding: "2px 6px", borderRadius: "4px", background: tone.bg, color: tone.ink, marginRight: "4px" }}
+                            >
+                              {audit.state === "blocked" ? "⛔" : audit.state === "review" ? "⚠" : "✓"} {label}
+                            </span>
+                            <span style={{ fontSize: "9.5px", color: "var(--muted)" }}>
+                              {audit.guardedChecks}/{audit.totalChecks} output guards armed
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px", paddingTop: "8px", borderTop: "1px solid rgba(0,0,0,0.06)" }}>
@@ -519,6 +591,60 @@ export default function SettingsClient({ account }: { account?: Account }) {
                 );
               })}
             </div>
+
+            {activeTemplate && activeGuard && (
+              <div
+                className="card"
+                style={{ padding: "14px 16px", marginBottom: "20px", background: "var(--paper-warm)", border: "1px solid var(--line-soft)" }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", gap: "10px", flexWrap: "wrap", alignItems: "baseline" }}>
+                  <p className="overline" style={{ margin: 0 }}>
+                    TEMPLATE GUARD · {activeTemplate.name}
+                  </p>
+                  <span style={{ fontSize: "10.5px", fontWeight: 700, color: "var(--ink-2)" }}>
+                    {activeGuard.state === "blocked" ? "⛔ Blocked" : activeGuard.state === "review" ? "⚠ Usable with warnings" : "✓ Ready as a main template"} · {activeGuard.score}/100
+                  </span>
+                </div>
+                <p style={{ margin: "6px 0 0", fontSize: "11px", color: "var(--muted)", lineHeight: 1.55 }}>
+                  Every pass inherits this template&apos;s rules, and the delivered text is audited against {guideGuards.guardedChecks} machine-checkable
+                  output guard(s) out of {guideGuards.totalChecks} verification check(s).
+                  {drift.length > 0 && (
+                    <>
+                      {" "}
+                      <strong style={{ color: "#8a5300" }}>
+                        The live rules have diverged from this template in: {drift.join(", ")}.
+                      </strong>{" "}
+                      Re-apply the template below to restore the contract.
+                    </>
+                  )}
+                </p>
+                {activeGuard.issues.length > 0 ? (
+                  <ul style={{ margin: "8px 0 0", paddingLeft: "18px", fontSize: "11px", color: "var(--ink-2)", lineHeight: 1.6 }}>
+                    {activeGuard.issues.map((issue) => (
+                      <li key={`${issue.field}-${issue.message}`}>
+                        {issue.level === "error" ? "⛔" : "⚠"} <strong>{issue.field}</strong>: {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p style={{ margin: "6px 0 0", fontSize: "11px", color: "var(--muted)" }}>
+                    No guard issues. Rules, master prompt, and Output Guide are complete.
+                  </p>
+                )}
+                {guideGuards.expectations.length > 0 && (
+                  <details style={{ marginTop: "8px" }}>
+                    <summary style={{ cursor: "pointer", fontSize: "11px", fontWeight: 700, color: "var(--ink-2)" }}>
+                      Armed output guards ({guideGuards.expectations.length})
+                    </summary>
+                    <ul style={{ margin: "6px 0 0", paddingLeft: "18px", fontSize: "11px", color: "var(--muted)", lineHeight: 1.6 }}>
+                      {guideGuards.expectations.map((expectation) => (
+                        <li key={expectation}>{expectation}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </div>
+            )}
 
             {/* Template Drafting Toggle / Builder */}
             <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", marginBottom: "20px" }}>

@@ -1,59 +1,128 @@
 {
   "type": "transcripter-workflow-template",
   "version": 1,
-  "exportedAt": "2026-09-17T19:09:11.954Z",
+  "exportedAt": "2026-09-21T12:17:34.402Z",
   "template": {
     "id": "tpl-psychiatric-evaluation-master",
-    "name": "Psychiatric Diagnostic Evaluation & Clinical Note Master",
-    "description": "Standardized psychiatric intake and clinical evaluation template. Transforms raw clinical notes or patient interview transcripts into structured documentation with Chief Complaint, HPI, Meds, Psych Hx, ROS, MSE, Numbered Assessment, and Psychotherapy Add-on Plan.",
-    "category": "Clinical & Psychiatric",
+    "name": "Psychiatric Diagnostic Evaluation Master",
+    "description": "Standardized psychiatric clinical documentation template. Converts clinical encounter notes and psychiatric evaluations into audit-ready documentation (Chief Complaint, HPI, Medications, Review of Systems, MSE, numbered Assessment, and Psychotherapy Add-on plan).",
+    "category": "Clinical & Medical",
     "isDefault": false,
-    "formatRules": "Follow this exact clinical section order, exact capitalization, and punctuation:\n\nCHIEF COMPLAINT: - [Primary diagnoses / chief concerns, e.g. MDD, Age related cognitive decline]\nHISTORY OF PRESENT ILLNESS: -\n[Comprehensive narrative paragraph in professional third person (\"The client is a...\", \"The patient reports...\") covering presentation, age, accompanied collateral, precipitating life events, timeline, environmental triggers, symptom endorsements (sadness, crying, sleep, appetite), fall history, medical co-morbidities (e.g. UTI, constipation), cognitive recall, and family collateral history.]\n\nCURRENT PSYCH MEDICATIONS: - [List psychotropic medications or None]\n\nCURRENT NON-PSYCH MEDICATIONS: - \n- [List each non-psychiatric medication with bullet points or None]\n\nPAST PSYCH MEDICATIONS: - [List past psychiatric medications or None]\n\nPAST PSYCHIATRIC HISTORY: - [Prior depression/anxiety, outpatient therapy, psychiatric hospitalizations, or Denies]\n\nSUBSTANCE ABUSE HISTORY: - [Tobacco, alcohol, illicit substance use history, cessation history, or Denies]\n\nTrauma Hx: [Trauma history or None]\n\nSOCIAL HISTORY/ EDUCATIONAL HX: - [Birthplace, family, military/employment, marriage/bereavement, relocations, snowbird history, local support system, hobbies/isolation]\n\nLegal Hx: - [Legal history or None]\n\nFAMILY PSYCHIATRIC HISTORY: - [Family mental health history or Denies]\n\nPAST MEDICAL HISTORY: - [Medical history, acute conditions, e.g. UTI, constipation, falls]\n\nDRUG ALLERGY: - \n- [List all drug allergies or NKDA]\n\nObjective:\nVital Signs: Height: Weight: (Pounds), BP: Pulse: Resp: \n\n O: REVIEW OF SYSTEMS: \nConstitutional: [Constitutional ROS]\nEYE: [Ophthalmologic ROS]\nCARDIOVASCULAR: [Cardiovascular ROS]\nRESPIRATORY: [Respiratory ROS]\nGASTROINTESTINAL: [GI ROS, e.g. constipation]\nEndocrine: [Endocrine ROS]\nMUSCULO-SKELETAL: [Musculoskeletal ROS, mobility, assistive devices]\nNEUROLOGICAL: [Orientation, headache, seizures, balance]\n\nMental Status Exam:\n- Appearance: [Age-appropriate, assistive devices, sensory aids]\n- Behavior: [Cooperative, engaged, anxiety level]\n- Speech: [Clarity, coherence, rate, volume]\n- Mood: [Subjective mood description]\n- Affect: [Affective range, congruence, tearfulness]\n- Thought Process: [Linear, goal-directed]\n- Thought Content: [Focus of thought, SI/HI denial]\n- Cognition: [Orientation x3, short/long-term memory]\n- Insight: [Good / Fair / Poor]\n- Judgment: [Good / Fair / Poor]\n\nAssessment: \n    1. [Numbered prioritized clinical recommendations, medication continuations, monitoring plans, family psychoeducation, fall prevention, and medical co-management.]\n\nPlan\nPsychosocial/ Psychotherapeutic/ Behavioral Assessment (Therapy Add-on only): \n\nType of therapy used: [] Motivational interviewing [] CBT [x] Supportive therapy \n\nIntervention: [Intervention description, e.g. Supportive therapy]\n\nTotal psychotherapy time: - [Duration in minutes]\n\nTarget Symptoms: [Primary target symptoms addressed]\nDescription: [Narrative summary of psychotherapeutic exploration, psychoeducation, and family support]\n\nGoal/Progress: [Summary of session goals and patient response]\nTreatment Goals: [x] decrease depressive sx [x] decrease anxiety sx [] decrease conflicts/ anger [] decrease psychosis [] decrease confusion [x] improve coping skills [] reduce negative bx [X] improve treatment compliance [] improve focus and attention [x] increase motivation [] decrease mood volatility [x] Improve sleep patterns [] decrease alcohol consumption [] decrease marijuana use [] decrease substance use\nTreatment Goals Measured by: [x] decrease episodes of emotional/ behavioral problems [x] improved compliance with treatment [] decrease need for PRN medications [x] positive interactions with peers/family [ x] increased participation in interactions [] Increased focus and energy [x ] Increased motivation [x] Healthy sleep patterns [x] Healthy eating patterns [] decreased mood volatility [ ] decreased alcohol consumption [ ] decreased marijuana use [] decreased substance use\nProgress Related to Goals: [] good [] fair [] minimal [x] assess at f/u\nFunctional Status: [] good [x] fair [] poor\nInteractive Complexity (only use when therapy is coded): [] Maladaptive communication: [] cognitive deficits [] memory impaired [] limited insight [] repeated questions [] distractible [] argumentative [] denial of symptoms [] hearing impaired [] Caregiver/ Family Emotions or Behavior  \nPrognosis: [] good [] fair [x] guarded [] poor\nDisposition: Continue with follow-up care.\n- Discussed diagnosis, treatment, risks benefits side effects, and alternate treatment.\n- Medication, their effects, and side effects including metabolic, EPS, effect on the heart were discussed.\n- Risk of medication increases with substance abuse and drinking. Compliance was addressed.\nRETURN TO CLINIC: [ 4] Week(s) [] Month(s) [] PRN",
-    "editRules": "1. Transform raw psychiatric intake notes, conversational transcripts, or clinical summaries into a rigorous, third-person medical record (\"The client is a...\", \"The patient reports...\", \"He states...\").\n2. Accurately separate psychotropic medications (CURRENT PSYCH MEDICATIONS) from general medical treatments (CURRENT NON-PSYCH MEDICATIONS).\n3. Explicitly itemize all documented drug allergies under DRUG ALLERGY: - (e.g. Amoxicillin, Sulfamethoxazole/Trimethoprim) and highlight reported severe adverse reactions.\n4. Integrate collateral history from family members, case managers, or caregivers into HPI and the Psychotherapy Add-on plan with exact attribution.\n5. In Assessment, synthesize clinical decisions into a clean sequentially numbered list (1, 2, 3...) covering medication continuity, weekly monitoring check-ins, grief normalization, family dynamics, and fall prevention.\n6. Populate the Psychotherapy Add-on checklist with precise brackets ([x] for checked/active items, [] for unchecked items) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis.\n7. Preserve all clinical metrics, numbers, dates, ages, and medical details without hallucination or truncation.",
-    "masterPrompt": "You are an elite board-certified psychiatric documentation specialist. Transform raw patient encounter notes, clinical summaries, or intake transcripts into a standardized, audit-proof psychiatric diagnostic evaluation. Adhere strictly to the required section headers, Review of Systems, Mental Status Exam, numbered Assessment items, and Psychotherapy Add-on checklist. Return only the clinical document conforming to the formatting contract.",
+    "formatRules": "Emit the document with these EXACT section headers, in this order, and add nothing between them:\n\nCHIEF COMPLAINT: -\nHISTORY OF PRESENT ILLNESS: -\nCURRENT PSYCH MEDICATIONS: -\nCURRENT NON-PSYCH MEDICATIONS: -\nPAST PSYCH MEDICATIONS: -\nPAST PSYCHIATRIC HISTORY: -\nSUBSTANCE ABUSE HISTORY: -\nTRAUMA HISTORY: -\nSOCIAL HISTORY / EDUCATIONAL HISTORY: -\nLEGAL HISTORY: -\nFAMILY PSYCHIATRIC HISTORY: -\nPAST MEDICAL HISTORY: -\nDRUG ALLERGY: -\nObjective:\nVital Signs:\nREVIEW OF SYSTEMS:\nMental Status Exam:\nAssessment:\nPlan\nPsychosocial/ Psychotherapeutic/ Behavioral Assessment (Therapy Add-on only):\nRETURN TO CLINIC:\n\nRules for each part:\n1. Keep every header verbatim, including the trailing colon and dash. Never rename, translate, reorder, merge, or omit a header.\n2. HISTORY OF PRESENT ILLNESS is one continuous third-person narrative paragraph — no bullets.\n3. CURRENT PSYCH MEDICATIONS, CURRENT NON-PSYCH MEDICATIONS, PAST PSYCH MEDICATIONS, and DRUG ALLERGY use \"-\" bullets, one item per line. Write \"None\" or \"NKDA\" when nothing is documented, and keep a documented adverse reaction attached to its drug.\n4. REVIEW OF SYSTEMS uses one line per organ system: Constitutional, EYE, CARDIOVASCULAR, RESPIRATORY, GASTROINTESTINAL, Endocrine, MUSCULO-SKELETAL, NEUROLOGICAL.\n5. Mental Status Exam uses \"- \" bullets in this order: Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment. Insight and Judgment read Good, Fair, or Poor.\n6. Assessment is a numbered list (1., 2., 3., …) of concrete clinical decisions, highest priority first.\n7. The Therapy Add-on block keeps every checkbox token as [x] or [ ] exactly as supplied, and never marks an item [x] unless the source supports it.\n8. Vital Signs keeps the supplied values in place; leave a value blank rather than estimating it.\n9. If the source does not document a required field, write [Not documented]. Never invent a value, date, dose, or diagnosis.",
+    "editRules": "1. Transform raw psychiatric intake notes, conversational transcripts, or clinical summaries into a rigorous third-person medical record (\"The client is a…\", \"The patient reports…\", \"He states…\").\n2. Never fabricate clinical content: no invented medications, doses, frequencies, laboratory values, dates, ages, diagnoses, or risk statements. Anything absent from the source becomes [Not documented].\n3. Preserve every reported fact in substance — numbers, units, dates, ages, quantities — and keep quoted patient language intact (e.g. \"I can't sleep\").\n4. Separate CURRENT PSYCH MEDICATIONS from CURRENT NON-PSYCH MEDICATIONS, and itemize every documented drug allergy under DRUG ALLERGY (or NKDA). Flag severe adverse reactions exactly as reported.\n5. Attribute collateral history to its source (family, caregiver, case manager) inside HPI and the Therapy Add-on plan; never blend collateral statements into the patient's own voice.\n6. Assessment: a sequentially numbered list (1, 2, 3…) covering medication continuity, monitoring, risk, family psychoeducation, fall prevention, and medical co-management.\n7. Populate the Therapy Add-on checklist with precise brackets ([x] active, [ ] inactive) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis, driven by the source.\n8. Preserve uncertainty: keep [inaudible], [crosstalk], and unclear values marked rather than resolving them silently.",
+    "masterPrompt": "You are an elite board-certified psychiatric documentation specialist. Convert the supplied encounter notes, clinical summary, or intake transcript into a standardized, audit-ready psychiatric diagnostic evaluation. Follow the required section headers, Review of Systems, Mental Status Exam, numbered Assessment, and Psychotherapy Add-on checklist exactly. Documentation integrity is non-negotiable: never invent, infer, or upgrade a clinical finding, and mark anything not documented as [Not documented]. Return only the clinical document — no commentary, no preamble, no explanation of these instructions.",
     "outputGuide": {
       "title": "Psychiatric Diagnostic Evaluation Standard",
-      "description": "Clinical documentation standards for psychiatric evaluations, Review of Systems, Mental Status Examination, and psychotherapy add-on records.",
-      "speakerFormat": "Standardized medical record section headers (e.g., 'CHIEF COMPLAINT: -', 'HISTORY OF PRESENT ILLNESS: -', 'CURRENT PSYCH MEDICATIONS: -').",
-      "paragraphRules": "Single comprehensive narrative block for HPI; categorized lists for medications and allergies; numbered entries for Assessment; bracketed checklist for Therapy Add-on.",
-      "punctuationRules": "Standard medical documentation punctuation. Bullet points for medication lists and ROS categories.",
-      "uncertaintyMarkers": "Record unknown dosages or unconfirmed strengths as reported; note patient uncertainty regarding exact dates or years.",
-      "editorialNotes": "Clinical third-person voice. Precise separation of psychiatric vs non-psychiatric medications and strict allergy documentation.",
+      "description": "Clinical documentation standards for psychiatric evaluations: required section order, Review of Systems, Mental Status Examination, medication and allergy separation, and the psychotherapy add-on record.",
+      "speakerFormat": "Fixed uppercase clinical section headers (e.g. 'CHIEF COMPLAINT: -', 'HISTORY OF PRESENT ILLNESS: -', 'CURRENT PSYCH MEDICATIONS: -', 'Mental Status Exam:').",
+      "paragraphRules": "One continuous third-person narrative paragraph for HPI; bulleted lists for medications, allergies, and MSE fields; one line per organ system for the Review of Systems; numbered entries for Assessment; bracketed checklist for the Therapy Add-on.",
+      "punctuationRules": "Standard medical documentation punctuation. Keep the trailing colon-and-dash on each header exactly as written and bullet every list item with '-'.",
+      "uncertaintyMarkers": "Preserve [inaudible] and [crosstalk]. Report unknown dosages, strengths, or dates exactly as reported, and write [Not documented] for required fields the source never covers.",
+      "editorialNotes": "Clinical third-person voice. Strict separation of psychiatric vs non-psychiatric medications, explicit allergy documentation, and zero fabrication of clinical facts.",
       "checks": [
         {
           "id": "check-clinical-headers",
           "label": "Clinical Section Headers Integrity",
-          "description": "Verifies all required psychiatric sections are present in standard sequence.",
-          "rule": "Standard section headers (CHIEF COMPLAINT, HPI, MEDICATIONS, ROS, MSE, Assessment, Plan).",
-          "category": "formatting"
+          "description": "Verifies every required psychiatric section is present, in the standard order.",
+          "rule": "Required section headers appear in order: CHIEF COMPLAINT, HISTORY OF PRESENT ILLNESS, CURRENT PSYCH MEDICATIONS, CURRENT NON-PSYCH MEDICATIONS, PAST PSYCH MEDICATIONS, PAST PSYCHIATRIC HISTORY, SUBSTANCE ABUSE HISTORY, TRAUMA HISTORY, SOCIAL HISTORY, LEGAL HISTORY, FAMILY PSYCHIATRIC HISTORY, PAST MEDICAL HISTORY, DRUG ALLERGY, Objective, Vital Signs, REVIEW OF SYSTEMS, Mental Status Exam, Assessment, Plan, RETURN TO CLINIC.",
+          "category": "formatting",
+          "expectation": {
+            "kind": "headers",
+            "headers": [
+              "CHIEF COMPLAINT",
+              "HISTORY OF PRESENT ILLNESS",
+              "CURRENT PSYCH MEDICATIONS",
+              "CURRENT NON-PSYCH MEDICATIONS",
+              "PAST PSYCH MEDICATIONS",
+              "PAST PSYCHIATRIC HISTORY",
+              "SUBSTANCE ABUSE HISTORY",
+              "TRAUMA HISTORY",
+              "SOCIAL HISTORY",
+              "LEGAL HISTORY",
+              "FAMILY PSYCHIATRIC HISTORY",
+              "PAST MEDICAL HISTORY",
+              "DRUG ALLERGY",
+              "Objective",
+              "Vital Signs",
+              "REVIEW OF SYSTEMS",
+              "Mental Status Exam",
+              "Assessment",
+              "Plan",
+              "RETURN TO CLINIC"
+            ]
+          }
         },
         {
           "id": "check-meds-allergies",
           "label": "Medication & Allergy Separation",
-          "description": "Ensures psych and non-psych medications are cleanly categorized and drug allergies are itemized.",
-          "rule": "Separate CURRENT PSYCH, NON-PSYCH, and DRUG ALLERGY sections.",
-          "category": "verbatim"
+          "description": "Ensures psych and non-psych medications are cleanly categorized and the allergy line is always documented.",
+          "rule": "Separate CURRENT PSYCH, CURRENT NON-PSYCH, and DRUG ALLERGY sections, with the allergy line present and bulleted (NKDA when nothing is documented).",
+          "category": "verbatim",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "^DRUG ALLERGY:\\s*-",
+            "flags": "m",
+            "hint": "the DRUG ALLERGY line must stay in place, with NKDA when nothing is documented"
+          }
         },
         {
           "id": "check-ros-mse",
           "label": "Review of Systems & MSE Completeness",
-          "description": "Validates standard Review of Systems organ systems and complete Mental Status Exam fields.",
-          "rule": "Complete ROS and 10 MSE fields (Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment).",
-          "category": "structure"
+          "description": "Validates the Review of Systems organ systems and a complete Mental Status Exam with rated insight and judgment.",
+          "rule": "Complete ROS and 10 MSE fields (Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment), with Insight and Judgment rated Good, Fair, or Poor.",
+          "category": "structure",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "\\bInsight:\\s*(Good|Fair|Poor)",
+            "hint": "Insight and Judgment must be rated Good, Fair, or Poor"
+          }
         },
         {
           "id": "check-assessment-numbered",
           "label": "Numbered Assessment List",
           "description": "Ensures assessment items are sequentially numbered with concrete management steps.",
-          "rule": "Numbered list (1., 2., 3...) in Assessment section.",
-          "category": "structure"
+          "rule": "Numbered list (1., 2., 3…) in the Assessment section, at least three prioritized items.",
+          "category": "structure",
+          "expectation": {
+            "kind": "numbered",
+            "minItems": 3
+          }
         },
         {
           "id": "check-therapy-plan",
-          "label": "Psychotherapy Add-on Checklist & Return to Clinic",
-          "description": "Verifies bracketed checkbox format for treatment goals and explicit Return to Clinic timeframe.",
-          "rule": "Checkbox format [x] / [] and RETURN TO CLINIC designation.",
-          "category": "punctuation"
+          "label": "Psychotherapy Add-on Checklist",
+          "description": "Verifies the bracketed checkbox format for treatment goals, measures, functional status, and prognosis.",
+          "rule": "Checkbox tokens ([x] / [ ]) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis, with at least one active item.",
+          "category": "punctuation",
+          "expectation": {
+            "kind": "checklist",
+            "minBoxes": 10,
+            "requireChecked": true
+          }
+        },
+        {
+          "id": "check-return-to-clinic",
+          "label": "Return to Clinic & Disposition",
+          "description": "Confirms the document closes with an explicit follow-up interval and disposition.",
+          "rule": "RETURN TO CLINIC: with a Week(s) / Month(s) / PRN interval selected.",
+          "category": "structure",
+          "expectation": {
+            "kind": "regex",
+            "pattern": "RETURN TO CLINIC:",
+            "hint": "state the follow-up interval"
+          }
+        },
+        {
+          "id": "check-no-placeholders",
+          "label": "Fabrication & Placeholder Guard",
+          "description": "Blocks unfilled template text, TODOs, and fabricated markers from shipping as a clinical record.",
+          "rule": "No [insert…], TBD, XXXX, or lorem ipsum placeholders; undocumented fields read [Not documented] instead.",
+          "category": "verbatim",
+          "expectation": {
+            "kind": "absence",
+            "pattern": "\\[\\s*(insert|todo|tbd|placeholder|your|unknown|missing)[^\\]]*\\]|\\bTBD\\b|lorem ipsum|\\bX{3,}\\b",
+            "hint": "unfilled template text must never ship as a clinical record"
+          }
         }
       ]
     },

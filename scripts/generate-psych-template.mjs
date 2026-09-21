@@ -221,158 +221,20 @@ Disposition: Continue with follow-up care.
 - Risk of medication increases with substance abuse and drinking. Compliance was addressed.
 RETURN TO CLINIC: [ 4] Week(s) [] Month(s) [] PRN`;
 
-  const formatRules = `Follow this exact clinical section order, exact capitalization, and punctuation:
-
-CHIEF COMPLAINT: - [Primary diagnoses / chief concerns, e.g. MDD, Age related cognitive decline]
-HISTORY OF PRESENT ILLNESS: -
-[Comprehensive narrative paragraph in professional third person ("The client is a...", "The patient reports...") covering presentation, age, accompanied collateral, precipitating life events, timeline, environmental triggers, symptom endorsements (sadness, crying, sleep, appetite), fall history, medical co-morbidities (e.g. UTI, constipation), cognitive recall, and family collateral history.]
-
-CURRENT PSYCH MEDICATIONS: - [List psychotropic medications or None]
-
-CURRENT NON-PSYCH MEDICATIONS: - 
-- [List each non-psychiatric medication with bullet points or None]
-
-PAST PSYCH MEDICATIONS: - [List past psychiatric medications or None]
-
-PAST PSYCHIATRIC HISTORY: - [Prior depression/anxiety, outpatient therapy, psychiatric hospitalizations, or Denies]
-
-SUBSTANCE ABUSE HISTORY: - [Tobacco, alcohol, illicit substance use history, cessation history, or Denies]
-
-Trauma Hx: [Trauma history or None]
-
-SOCIAL HISTORY/ EDUCATIONAL HX: - [Birthplace, family, military/employment, marriage/bereavement, relocations, snowbird history, local support system, hobbies/isolation]
-
-Legal Hx: - [Legal history or None]
-
-FAMILY PSYCHIATRIC HISTORY: - [Family mental health history or Denies]
-
-PAST MEDICAL HISTORY: - [Medical history, acute conditions, e.g. UTI, constipation, falls]
-
-DRUG ALLERGY: - 
-- [List all drug allergies or NKDA]
-
-Objective:
-Vital Signs: Height: Weight: (Pounds), BP: Pulse: Resp: 
-
- O: REVIEW OF SYSTEMS: 
-Constitutional: [Constitutional ROS]
-EYE: [Ophthalmologic ROS]
-CARDIOVASCULAR: [Cardiovascular ROS]
-RESPIRATORY: [Respiratory ROS]
-GASTROINTESTINAL: [GI ROS, e.g. constipation]
-Endocrine: [Endocrine ROS]
-MUSCULO-SKELETAL: [Musculoskeletal ROS, mobility, assistive devices]
-NEUROLOGICAL: [Orientation, headache, seizures, balance]
-
-Mental Status Exam:
-- Appearance: [Age-appropriate, assistive devices, sensory aids]
-- Behavior: [Cooperative, engaged, anxiety level]
-- Speech: [Clarity, coherence, rate, volume]
-- Mood: [Subjective mood description]
-- Affect: [Affective range, congruence, tearfulness]
-- Thought Process: [Linear, goal-directed]
-- Thought Content: [Focus of thought, SI/HI denial]
-- Cognition: [Orientation x3, short/long-term memory]
-- Insight: [Good / Fair / Poor]
-- Judgment: [Good / Fair / Poor]
-
-Assessment: 
-    1. [Numbered prioritized clinical recommendations, medication continuations, monitoring plans, family psychoeducation, fall prevention, and medical co-management.]
-
-Plan
-Psychosocial/ Psychotherapeutic/ Behavioral Assessment (Therapy Add-on only): 
-
-Type of therapy used: [] Motivational interviewing [] CBT [x] Supportive therapy 
-
-Intervention: [Intervention description, e.g. Supportive therapy]
-
-Total psychotherapy time: - [Duration in minutes]
-
-Target Symptoms: [Primary target symptoms addressed]
-Description: [Narrative summary of psychotherapeutic exploration, psychoeducation, and family support]
-
-Goal/Progress: [Summary of session goals and patient response]
-Treatment Goals: [x] decrease depressive sx [x] decrease anxiety sx [] decrease conflicts/ anger [] decrease psychosis [] decrease confusion [x] improve coping skills [] reduce negative bx [X] improve treatment compliance [] improve focus and attention [x] increase motivation [] decrease mood volatility [x] Improve sleep patterns [] decrease alcohol consumption [] decrease marijuana use [] decrease substance use
-Treatment Goals Measured by: [x] decrease episodes of emotional/ behavioral problems [x] improved compliance with treatment [] decrease need for PRN medications [x] positive interactions with peers/family [ x] increased participation in interactions [] Increased focus and energy [x ] Increased motivation [x] Healthy sleep patterns [x] Healthy eating patterns [] decreased mood volatility [ ] decreased alcohol consumption [ ] decreased marijuana use [] decreased substance use
-Progress Related to Goals: [] good [] fair [] minimal [x] assess at f/u
-Functional Status: [] good [x] fair [] poor
-Interactive Complexity (only use when therapy is coded): [] Maladaptive communication: [] cognitive deficits [] memory impaired [] limited insight [] repeated questions [] distractible [] argumentative [] denial of symptoms [] hearing impaired [] Caregiver/ Family Emotions or Behavior  
-Prognosis: [] good [] fair [x] guarded [] poor
-Disposition: Continue with follow-up care.
-- Discussed diagnosis, treatment, risks benefits side effects, and alternate treatment.
-- Medication, their effects, and side effects including metabolic, EPS, effect on the heart were discussed.
-- Risk of medication increases with substance abuse and drinking. Compliance was addressed.
-RETURN TO CLINIC: [ 4] Week(s) [] Month(s) [] PRN`;
-
-  const editRules = `1. Transform raw psychiatric intake notes, conversational transcripts, or clinical summaries into a rigorous, third-person medical record ("The client is a...", "The patient reports...", "He states...").
-2. Accurately separate psychotropic medications (CURRENT PSYCH MEDICATIONS) from general medical treatments (CURRENT NON-PSYCH MEDICATIONS).
-3. Explicitly itemize all documented drug allergies under DRUG ALLERGY: - (e.g. Amoxicillin, Sulfamethoxazole/Trimethoprim) and highlight reported severe adverse reactions.
-4. Integrate collateral history from family members, case managers, or caregivers into HPI and the Psychotherapy Add-on plan with exact attribution.
-5. In Assessment, synthesize clinical decisions into a clean sequentially numbered list (1, 2, 3...) covering medication continuity, weekly monitoring check-ins, grief normalization, family dynamics, and fall prevention.
-6. Populate the Psychotherapy Add-on checklist with precise brackets ([x] for checked/active items, [] for unchecked items) across Treatment Goals, Measures, Progress, Functional Status, and Prognosis.
-7. Preserve all clinical metrics, numbers, dates, ages, and medical details without hallucination or truncation.`;
-
-  const masterPrompt = `You are an elite board-certified psychiatric documentation specialist. Transform raw patient encounter notes, clinical summaries, or intake transcripts into a standardized, audit-proof psychiatric diagnostic evaluation. Adhere strictly to the required section headers, Review of Systems, Mental Status Exam, numbered Assessment items, and Psychotherapy Add-on checklist. Return only the clinical document conforming to the formatting contract.`;
+  // The canonical clinical contract lives in lib/workflow.ts. This script only
+  // embeds the worked example (sampleInput/sampleOutput) around it, so an
+  // exported template can never ship unarmed checks or a stale guide.
+  const { DEFAULT_TEMPLATES } = await import("../lib/workflow.ts");
+  const canonical = DEFAULT_TEMPLATES.find((t) => t.id === "tpl-psychiatric-evaluation-master");
+  if (!canonical) throw new Error("Canonical psychiatric template not found in lib/workflow.ts");
 
   const templatePayload = {
     type: "transcripter-workflow-template",
     version: 1,
     exportedAt: new Date().toISOString(),
     template: {
-      id: "tpl-psychiatric-evaluation-master",
-      name: "Psychiatric Diagnostic Evaluation & Clinical Note Master",
-      description: "Standardized psychiatric intake and clinical evaluation template. Transforms raw clinical notes or patient interview transcripts into structured documentation with Chief Complaint, HPI, Meds, Psych Hx, ROS, MSE, Numbered Assessment, and Psychotherapy Add-on Plan.",
-      category: "Clinical & Psychiatric",
+      ...canonical,
       isDefault: false,
-      formatRules,
-      editRules,
-      masterPrompt,
-      outputGuide: {
-        title: "Psychiatric Diagnostic Evaluation Standard",
-        description: "Clinical documentation standards for psychiatric evaluations, Review of Systems, Mental Status Examination, and psychotherapy add-on records.",
-        speakerFormat: "Standardized medical record section headers (e.g., 'CHIEF COMPLAINT: -', 'HISTORY OF PRESENT ILLNESS: -', 'CURRENT PSYCH MEDICATIONS: -').",
-        paragraphRules: "Single comprehensive narrative block for HPI; categorized lists for medications and allergies; numbered entries for Assessment; bracketed checklist for Therapy Add-on.",
-        punctuationRules: "Standard medical documentation punctuation. Bullet points for medication lists and ROS categories.",
-        uncertaintyMarkers: "Record unknown dosages or unconfirmed strengths as reported; note patient uncertainty regarding exact dates or years.",
-        editorialNotes: "Clinical third-person voice. Precise separation of psychiatric vs non-psychiatric medications and strict allergy documentation.",
-        checks: [
-          {
-            id: "check-clinical-headers",
-            label: "Clinical Section Headers Integrity",
-            description: "Verifies all required psychiatric sections are present in standard sequence.",
-            rule: "Standard section headers (CHIEF COMPLAINT, HPI, MEDICATIONS, ROS, MSE, Assessment, Plan).",
-            category: "formatting",
-          },
-          {
-            id: "check-meds-allergies",
-            label: "Medication & Allergy Separation",
-            description: "Ensures psych and non-psych medications are cleanly categorized and drug allergies are itemized.",
-            rule: "Separate CURRENT PSYCH, NON-PSYCH, and DRUG ALLERGY sections.",
-            category: "verbatim",
-          },
-          {
-            id: "check-ros-mse",
-            label: "Review of Systems & MSE Completeness",
-            description: "Validates standard Review of Systems organ systems and complete Mental Status Exam fields.",
-            rule: "Complete ROS and 10 MSE fields (Appearance, Behavior, Speech, Mood, Affect, Thought Process, Thought Content, Cognition, Insight, Judgment).",
-            category: "structure",
-          },
-          {
-            id: "check-assessment-numbered",
-            label: "Numbered Assessment List",
-            description: "Ensures assessment items are sequentially numbered with concrete management steps.",
-            rule: "Numbered list (1., 2., 3...) in Assessment section.",
-            category: "structure",
-          },
-          {
-            id: "check-therapy-plan",
-            label: "Psychotherapy Add-on Checklist & Return to Clinic",
-            description: "Verifies bracketed checkbox format for treatment goals and explicit Return to Clinic timeframe.",
-            rule: "Checkbox format [x] / [] and RETURN TO CLINIC designation.",
-            category: "punctuation",
-          },
-        ],
-      },
       sampleInput,
       sampleOutput,
     },

@@ -119,6 +119,10 @@ export default function EditsCanvas({
               <Icon name={audit.reviewCount === 0 ? "check" : "spark"} size={12} />
               {audit.reviewCount === 0 ? "Guide Compliant (100%)" : `${audit.passedCount}/${guide.checks.length} checks passed`}
             </span>
+            <span className="compliance-tag pass" title="Checks carrying a machine-checkable expectation">
+              <Icon name="check" size={12} />
+              {guide.checks.filter((check) => check.expectation).length}/{guide.checks.length} output guards armed
+            </span>
           </div>
         )}
       </div>
@@ -280,6 +284,11 @@ export default function EditsCanvas({
                             </span>
                           </div>
                           <p className="audit-check-msg">{report.message}</p>
+                          {report.expectation && (
+                            <p className="audit-check-msg" style={{ fontSize: "10px", opacity: 0.85 }}>
+                              <strong>Guard:</strong> {report.expectation}
+                            </p>
+                          )}
                           {report.samples && report.samples.length > 0 && (
                             <div className="audit-samples">
                               <small>Findings:</small>

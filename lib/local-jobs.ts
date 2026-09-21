@@ -46,6 +46,9 @@ export type DraftPayload = {
   formatRules?: string;
   editRules?: string;
   masterPrompt?: string;
+  /** Selected main template, so the choice survives a reload. */
+  templateId?: string;
+  outputGuide?: unknown;
 };
 
 export function readDraft(): DraftPayload | null {

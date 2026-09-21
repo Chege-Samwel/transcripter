@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "../../../lib/account";
 import { deleteTemplate, listTemplates, saveTemplate } from "../../../lib/templates";
+import { auditTemplate, sanitizeTemplateInput } from "../../../lib/template-guards";
 import { normalizeOutputGuide, type WorkflowTemplate } from "../../../lib/workflow";
 
 export const runtime = "nodejs";
@@ -8,7 +9,10 @@ export const runtime = "nodejs";
 export async function GET() {
   const account = await getCurrentUser();
   const templates = await listTemplates(account?.email);
-  return NextResponse.json({ ok: true, templates });
+  // Templates travel with their guard audit so every surface (workspace picker,
+  // settings library, imports) shows the same readiness verdict.
+  const guards = Object.fromEntries(templates.map((template) => [template.id, auditTemplate(template)]));
+  return NextResponse.json({ ok: true, templates, guards });
 }
 
 export async function POST(request: NextRequest) {
@@ -17,17 +21,41 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = (await request.json()) as Partial<WorkflowTemplate>;
-    if (!body.name?.trim()) {
+    const input = sanitizeTemplateInput(body);
+    if (!input.name?.trim()) {
       return NextResponse.json({ ok: false, error: "Template name is required." }, { status: 400 });
     }
 
+    // Selection guard: a template that would erase the editorial contract or
+    // leave the output un-auditable is rejected before it reaches the library.
+    const audit = auditTemplate({ ...input, outputGuide: normalizeOutputGuide(input.outputGuide) });
+    if (!audit.ok) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `This template cannot be saved: ${audit.issues.filter((issue) => issue.level === "error").map((issue) => issue.message).join(" ")}`,
+          code: "TEMPLATE_GUARD_BLOCKED",
+          audit,
+        },
+        { status: 422 },
+      );
+    }
+
     const result = await saveTemplate(account.email, {
-      ...body,
-      outputGuide: normalizeOutputGuide(body.outputGuide),
+      ...input,
+      outputGuide: normalizeOutputGuide(input.outputGuide),
     });
 
-    return NextResponse.json({ ok: true, template: result.template, message: "Template saved to your workspace." });
-  } catch (error) {
+    return NextResponse.json({
+      ok: true,
+      template: result.template,
+      audit,
+      warnings: audit.issues.filter((issue) => issue.level === "warning"),
+      message: audit.issues.length
+        ? "Template saved to your workspace with guard warnings."
+        : "Template saved to your workspace.",
+    });
+  } catch {
     return NextResponse.json({ ok: false, error: "Could not save template." }, { status: 400 });
   }
 }

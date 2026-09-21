@@ -62,6 +62,9 @@ Render Web Services do not run Next.js the Vercel way — they run `next start` 
 | `AUTH_PASSWORD` | Local only | Plain password fallback. Do not use in production. |
 | `NVIDIA_API_KEY` | For real model passes | Server-side NVIDIA NIM key. If unset, batches use the local preview transform. |
 | `NVIDIA_NIM_API_KEY` | Optional alias | Same as `NVIDIA_API_KEY`. |
+| `DEEPSEEK_API_KEY` | For DeepSeek model passes | Server-side DeepSeek key. Aliases: `DEEPSEEK_API_TOKEN`, `VITE_DEEPSEEK_API_KEY`, `DEEPSEEK_KEY`. |
+| `DEEPSEEK_THINKING` | Optional | `enabled` to use DeepSeek thinking mode (default: off for faster batches). |
+| `DEEPSEEK_BASE_URL` | Optional | Override the DeepSeek API host (default `https://api.deepseek.com`). |
 | `DATABASE_URL` | For registrations, approvals, history across devices | Standard Postgres URL (Neon pooled is ideal). |
 | `DISABLE_AUTO_MIGRATE` | Optional | `1` to apply schema only via `npm run db:migrate`. |
 | `DEMO_WORD_CAP` | Optional | Demo word cap. Default **600**. |

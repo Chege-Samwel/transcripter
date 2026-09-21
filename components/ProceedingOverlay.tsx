@@ -161,6 +161,8 @@ export default function ProceedingOverlay({
                 <option value="nvidia/nemotron-3.5-lightning">⚡ Nemotron 3.5 Lightning</option>
                 <option value="nvidia/nemotron-3-ultra-550b-a55b">Nemotron 3 Ultra</option>
                 <option value="google/gemma-4-26b-a4b-it:free">OpenRouter Gemma:free</option>
+                <option value="deepseek-flash">DeepSeek Flash</option>
+                <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
                 <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
               </select>
             )}
@@ -312,6 +314,26 @@ export default function ProceedingOverlay({
                 }}
               >
                 Gemma 4:free
+              </button>
+              <button
+                type="button"
+                className={activeModel === "deepseek-flash" ? "active" : ""}
+                onClick={() => {
+                  setCustomModelInput("deepseek-flash");
+                  onModelChange("deepseek-flash");
+                }}
+              >
+                DeepSeek Flash
+              </button>
+              <button
+                type="button"
+                className={activeModel === "deepseek-v4-pro" ? "active" : ""}
+                onClick={() => {
+                  setCustomModelInput("deepseek-v4-pro");
+                  onModelChange("deepseek-v4-pro");
+                }}
+              >
+                DeepSeek V4 Pro
               </button>
               <button
                 type="button"

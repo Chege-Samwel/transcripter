@@ -14,6 +14,7 @@ Render is an ideal persistent backend for Transcripter because **Render web serv
 3. Configure your Environment Variables:
    - `OPENROUTER_API_KEY`: API key from [OpenRouter](https://openrouter.ai/keys) (powers fast fallback models like `google/gemma-4-26b-a4b-it:free`).
    - `NVIDIA_API_KEY`: API key from [NVIDIA Build](https://build.nvidia.com/) (powers models like `nvidia/nemotron-3-ultra-550b-a55b` with `enable_thinking`).
+   - `DEEPSEEK_API_KEY`: API key from [DeepSeek Platform](https://platform.deepseek.com/api_keys) (powers `deepseek-flash` and `deepseek-v4-pro`; optional `DEEPSEEK_THINKING=enabled` to use thinking mode).
    - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`): API key from [Google AI Studio](https://aistudio.google.com/app/apikey).
    - `DATABASE_URL`: PostgreSQL connection string.
    - `SESSION_SECRET`: A secure 32+ character string.
@@ -30,19 +31,28 @@ Render is an ideal persistent backend for Transcripter because **Render web serv
 Transcripter includes a multi-provider cascade engine (`fetchAICascade`):
 
 1. **User Custom Model Freedom**:
-   - You can enter **any custom model string** directly in the Workspace or Admin settings (e.g. `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-26b-a4b-it:free`, `gemini-2.0-flash`, or custom endpoints).
+   - You can enter **any custom model string** directly in the Workspace or Admin settings (e.g. `nvidia/nemotron-3-ultra-550b-a55b`, `google/gemma-4-26b-a4b-it:free`, `deepseek-flash`, `deepseek-v4-pro`, `gemini-2.0-flash`, or custom endpoints).
    - You are never locked into hardcoded legacy or retired models.
 
 2. **NVIDIA NIM Primary (3 Retry Trials)**:
    - Evaluates primary models using NVIDIA NIM with up to 3 automatic trials.
    - Automatically enables thinking mode (`chat_template_kwargs: { enable_thinking: true }`) for Nemotron architectures.
 
-3. **OpenRouter Secondary Fallback**:
+3. **DeepSeek Direct (When Selected)**:
+   - Picking `deepseek-flash` (or `deepseek-v4-pro`, legacy `deepseek-chat`) calls `POST https://api.deepseek.com/chat/completions` with `DEEPSEEK_API_KEY`.
+   - Thinking mode is disabled by default so batches return promptly; `DEEPSEEK_THINKING=enabled` (plus optional `DEEPSEEK_REASONING_EFFORT`) switches to the reasoning path.
+   - `DEEPSEEK_BASE_URL` overrides the endpoint for gateways/proxies.
+
+4. **OpenRouter Secondary Fallback**:
    - If NVIDIA NIM is unavailable or rate-limited, requests cascade to OpenRouter using `OPENROUTER_API_KEY`.
    - Default fallback: `google/gemma-4-26b-a4b-it:free`.
 
-4. **Google AI Studio Tertiary Fallback**:
+5. **Google AI Studio Tertiary Fallback**:
    - High speed completions using `GEMINI_API_KEY` / `GOOGLE_API_KEY` (`gemini-2.0-flash`, `gemini-2.5-flash`, etc.).
 
-5. **Safe Local Fallback**:
+6. **Template & Output Guards**:
+   - Template selection is guarded: blocked templates (missing rules, master prompt, or Output Guide) are refused, blank fields never wipe live rules, stale `templateId`s are repaired, and drift from the selected template is reported.
+   - Each Output Guide check can carry a machine-checkable expectation (required headers, numbered lists, checkbox tokens, regex/absence patterns, speaker labels, paragraph bounds). The guide is injected into every pass as a delivery contract and re-audited on the delivered text (`guideAudit` / `guideFlags`).
+
+7. **Safe Local Fallback**:
    - If external APIs fail or keys are omitted during setup, the deterministic local editorial engine processes the batch safely without crashing jobs.

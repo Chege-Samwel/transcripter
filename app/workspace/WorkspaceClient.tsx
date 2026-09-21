@@ -30,6 +30,14 @@ import {
   type WorkflowConfig,
   type WorkflowTemplate,
 } from "../../lib/workflow";
+import {
+  applyTemplateToConfig,
+  auditTemplate,
+  guardSummary,
+  resolveTemplateId,
+  templateDrift,
+  type TemplateAudit,
+} from "../../lib/template-guards";
 
 type Notice = { tone: "success" | "error" | "info"; message: string };
 
@@ -43,6 +51,8 @@ type ProcessResponse = {
   warning?: string;
   retryable?: boolean;
   attempts?: { model: string; error: string }[];
+  guideFlags?: string[];
+  guideAudit?: { overallScore: number; passedCount: number; reviewCount: number };
 };
 
 function downloadBlob(blob: Blob, fileName: string) {
@@ -56,6 +66,64 @@ function downloadBlob(blob: Blob, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * Guard readout for the selected template: readiness verdict, how many output
+ * guards are armed, which fields the template left untouched, and whether the
+ * live config has drifted away from the template contract.
+ */
+function TemplateGuardNote({
+  audit,
+  drift,
+  guarded,
+  total,
+}: {
+  audit: TemplateAudit;
+  drift: string[];
+  guarded: number;
+  total: number;
+}) {
+  const issues = audit.issues;
+  const tone =
+    audit.state === "blocked" ? { bg: "#fdecea", border: "#f3b7ae", ink: "#8a1c0d" }
+    : audit.state === "review" ? { bg: "#fff8e1", border: "#f0dca0", ink: "#8a5300" }
+    : { bg: "#e6f4ea", border: "#b7e0c2", ink: "#137333" };
+  const verdict =
+    audit.state === "blocked" ? "Blocked" : audit.state === "review" ? "Applied with warnings" : "Ready";
+
+  return (
+    <div
+      style={{
+        margin: "0 0 8px",
+        padding: "7px 9px",
+        borderRadius: "6px",
+        border: `1px solid ${tone.border}`,
+        background: tone.bg,
+        color: tone.ink,
+        fontSize: "10.5px",
+        lineHeight: 1.45,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", fontWeight: 700 }}>
+        <span>Guard: {verdict}</span>
+        <span title="Output Guide checks carrying a machine-checkable expectation">
+          {guarded}/{total} output guards armed
+        </span>
+      </div>
+      {drift.length > 0 && (
+        <div style={{ marginTop: "3px" }}>
+          Diverged from the template contract: <strong>{drift.join(", ")}</strong>. Re-select the template to restore it.
+        </div>
+      )}
+      {issues.slice(0, 3).map((issue) => (
+        <div key={`${issue.field}-${issue.message}`} style={{ marginTop: "3px" }}>
+          {issue.level === "error" ? "⛔" : "⚠"} {issue.message}
+        </div>
+      ))}
+      {issues.length > 3 && <div style={{ marginTop: "3px" }}>+{issues.length - 3} more guard note(s) in Settings.</div>}
+    </div>
+  );
+}
+
 function assemble(batches: JobRecord["batches"], key: "normalize" | "format" | "edit") {
   return batches.map((batch) => batch[key]).filter(Boolean).join("\n\n").replace(/\n{3,}/g, "\n\n").trim();
 }
@@ -65,10 +133,13 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const [kind, setKind] = useState<JobKind>(account.canBookJob ? "job" : "demo");
   const [job, setJob] = useState<JobRecord | null>(null);
   const [templates, setTemplates] = useState<WorkflowTemplate[]>(DEFAULT_TEMPLATES);
+  const [templateGuards, setTemplateGuards] = useState<Record<string, TemplateAudit>>({});
+  const [guideAlert, setGuideAlert] = useState<string[]>([]);
   const [providersStatus, setProvidersStatus] = useState<{
     google?: { available: boolean; defaultModel?: string };
     nvidia?: { available: boolean; defaultModel?: string };
     openrouter?: { available: boolean; defaultModel?: string };
+    deepseek?: { available: boolean; defaultModel?: string };
   } | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -86,6 +157,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const [singleModelOnly, setSingleModelOnly] = useState(false);
   const [summaryLeft, setSummaryLeft] = useState("");
   const [summaryRight, setSummaryRight] = useState("");
+  const templatesRef = useRef<WorkflowTemplate[]>(DEFAULT_TEMPLATES);
   const transcriptInputRef = useRef<HTMLInputElement>(null);
   const pauseRef = useRef(false);
   const jobRef = useRef<JobRecord | null>(null);
@@ -145,14 +217,30 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
               google?: { available: boolean; defaultModel?: string };
               nvidia?: { available: boolean; defaultModel?: string };
               openrouter?: { available: boolean; defaultModel?: string };
+              deepseek?: { available: boolean; defaultModel?: string };
             };
           }>("/api/workflow"),
-          requestJson<{ templates?: WorkflowTemplate[] }>("/api/templates"),
+          requestJson<{ templates?: WorkflowTemplate[]; guards?: Record<string, TemplateAudit> }>("/api/templates"),
         ]);
         if (wfRes.data.providers) setProvidersStatus(wfRes.data.providers);
         if (wfRes.data.workflow?.config) defaults = normalizeConfig(wfRes.data.workflow.config);
         if (Array.isArray(tplRes.data.templates) && tplRes.data.templates.length) {
-          setTemplates(tplRes.data.templates);
+          const loadedTemplates = tplRes.data.templates;
+          templatesRef.current = loadedTemplates;
+          setTemplates(loadedTemplates);
+          setTemplateGuards(
+            tplRes.data.guards ||
+              Object.fromEntries(loadedTemplates.map((template) => [template.id, auditTemplate(template)])),
+          );
+          // Selection guard: a stored templateId that no longer exists (deleted,
+          // imported elsewhere, or a stale draft) is repaired to a real template
+          // so the picker and the applied rules can never disagree.
+          const resolved = resolveTemplateId(loadedTemplates, defaults.templateId);
+          if (resolved.template && (resolved.repaired || !defaults.templateId)) {
+            defaults = applyTemplateToConfig(defaults, resolved.template).config;
+          } else if (resolved.id) {
+            defaults = { ...defaults, templateId: resolved.id };
+          }
         }
       } catch { /* defaults */ }
 
@@ -181,13 +269,22 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
         }
       } else {
         const draft = readDraft();
+        // The draft carries the template the user last selected, so the picker
+        // and the applied contract still agree after a reload.
+        const draftTemplate = draft?.templateId
+          ? templatesRef.current.find((template) => template.id === draft.templateId)
+          : undefined;
+        const restored = draftTemplate
+          ? applyTemplateToConfig(defaults, draftTemplate).config
+          : defaults;
         setConfig(normalizeConfig({
-          ...defaults,
+          ...restored,
           transcript: draft?.source || "",
           sourceFileName: draft?.sourceFileName || "",
-          formatRules: draft?.formatRules || defaults.formatRules,
-          editRules: draft?.editRules || defaults.editRules,
-          masterPrompt: draft?.masterPrompt || defaults.masterPrompt,
+          formatRules: draft?.formatRules || restored.formatRules,
+          editRules: draft?.editRules || restored.editRules,
+          masterPrompt: draft?.masterPrompt || restored.masterPrompt,
+          outputGuide: draft?.outputGuide ? normalizeOutputGuide(draft.outputGuide) : restored.outputGuide,
         }));
         setKind(account.canBookJob ? (draft?.kind === "demo" ? "demo" : "job") : "demo");
       }
@@ -206,8 +303,32 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
       formatRules: config.formatRules,
       editRules: config.editRules,
       masterPrompt: config.masterPrompt,
+      templateId: config.templateId,
+      outputGuide: config.outputGuide,
     });
-  }, [config.editRules, config.formatRules, config.masterPrompt, config.sourceFileName, config.transcript, hydrated, jobId, kind]);
+  }, [config.editRules, config.formatRules, config.masterPrompt, config.outputGuide, config.sourceFileName, config.templateId, config.transcript, hydrated, jobId, kind]);
+
+  // Persist the selected main template (and its contract) for the account, so the
+  // choice is the saved main template on the next visit and on other devices.
+  // Partial save: the stored workflow result/cross-checks are left untouched.
+  const lastSyncedTemplate = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hydrated || jobId || !config.templateId) return;
+    if (lastSyncedTemplate.current === config.templateId) return;
+    lastSyncedTemplate.current = config.templateId;
+    const payload = {
+      templateId: config.templateId,
+      name: config.name,
+      description: config.description,
+      formatRules: config.formatRules,
+      editRules: config.editRules,
+      masterPrompt: config.masterPrompt,
+      outputGuide: config.outputGuide,
+    };
+    void requestJson("/api/workflow", { method: "POST", body: JSON.stringify({ config: payload }) }, { retries: 1 }).catch(() => {
+      /* a browser draft still holds the selection when the server is unreachable */
+    });
+  }, [config.description, config.editRules, config.formatRules, config.masterPrompt, config.name, config.outputGuide, config.templateId, hydrated, jobId]);
 
   useEffect(() => {
     if (!notice) return;
@@ -218,6 +339,50 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
   const updateConfig = useCallback(<K extends keyof WorkflowConfig>(key: K, value: WorkflowConfig[K]) => {
     setConfig((current) => ({ ...current, [key]: value }));
   }, []);
+
+  // ---- Template guards -----------------------------------------------------
+  const activeTemplate = useMemo(
+    () => templates.find((template) => template.id === config.templateId),
+    [templates, config.templateId],
+  );
+
+  const activeTemplateId = useMemo(
+    () => resolveTemplateId(templates, config.templateId).id,
+    [templates, config.templateId],
+  );
+
+  const activeGuard = useMemo(
+    () => templateGuards[activeTemplateId] || (activeTemplate ? auditTemplate(activeTemplate) : undefined),
+    [templateGuards, activeTemplateId, activeTemplate],
+  );
+
+  const activeDrift = useMemo(() => templateDrift(config, activeTemplate), [config, activeTemplate]);
+  const activeGuardSummary = useMemo(() => guardSummary(config.outputGuide), [config.outputGuide]);
+
+  /**
+   * Guarded template selection: only non-empty fields are copied over the live
+   * config, the applied/kept fields are reported, and a blocked template is
+   * refused instead of quietly degrading the editorial contract.
+   */
+  const applyTemplate = useCallback(
+    (template: WorkflowTemplate) => {
+      const audit = templateGuards[template.id] || auditTemplate(template);
+      if (!audit.ok) {
+        const blocked = audit.issues.filter((issue) => issue.level === "error").map((issue) => issue.message);
+        setNotice({ tone: "error", message: `"${template.name}" cannot be applied yet: ${blocked.join(" ")}` });
+        return;
+      }
+      setConfig((current) => applyTemplateToConfig(current, template).config);
+      const warnings = audit.issues.filter((issue) => issue.level === "warning");
+      setNotice({
+        tone: warnings.length ? "info" : "success",
+        message: warnings.length
+          ? `Template "${template.name}" applied with ${warnings.length} guard warning(s): ${warnings.map((issue) => issue.message).join(" ")}`
+          : `Template "${template.name}" applied. ${audit.guardedChecks}/${audit.totalChecks} output guards are armed.`,
+      });
+    },
+    [templateGuards],
+  );
 
   const readFile = useCallback(async (file: File) => {
     let isZip = file.name.toLowerCase().endsWith(".zip") || file.type === "application/zip";
@@ -446,6 +611,9 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 editRules: activeConfig.editRules,
                 model: activeConfig.primaryModel,
                 fallbackModels: activeConfig.fallbackModels,
+                outputGuide: activeConfig.outputGuide,
+                templateId: activeConfig.templateId,
+                templateName: activeConfig.name,
                 singleModelOnly: singleModelOnly || activeConfig.primaryModel.includes("lightning") || activeConfig.primaryModel.includes(":free"),
                 contextWindow: activeConfig.contextWindow,
                 maxOutputTokens: activeConfig.maxOutputTokens,
@@ -463,6 +631,20 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           );
           const ok = processRes.ok;
           const data = processRes.data;
+
+          // Output guard: the template's own expectations are audited server-side
+          // on the delivered text. Failures are surfaced on this pass instead of
+          // being waved through as a clean batch.
+          if (ok && data.guideFlags?.length) {
+            setGuideAlert(data.guideFlags);
+            pushLog(
+              `${stage.label} · output guard flagged ${data.guideFlags.length} check(s)`,
+              "info",
+              data.guideFlags.slice(0, 3).join(" · "),
+            );
+          } else if (ok) {
+            setGuideAlert([]);
+          }
 
           if (!ok || !data.output?.trim()) {
             const attempts = data.attempts?.length
@@ -614,6 +796,9 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
           refineInstruction,
           model: config.primaryModel,
           fallbackModels: config.fallbackModels,
+          outputGuide: config.outputGuide,
+          templateId: config.templateId,
+          templateName: config.name,
           contextWindow: config.contextWindow,
           maxOutputTokens: config.maxOutputTokens,
           temperature: config.temperature,
@@ -649,14 +834,17 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
     if (!text || checking) return;
     setChecking(true);
     await new Promise((resolve) => window.setTimeout(resolve, 250));
-    const checks = sectionChecks(text);
+    const checks = sectionChecks(text, config.outputGuide);
     if (jobRef.current) await persist({ ...jobRef.current, crossChecks: checks, updatedAt: new Date().toISOString() });
     setChecking(false);
+    const flagged = checks.filter((check) => check.status === "review");
     setNotice({
-      tone: checks.some((check) => check.status === "review") ? "info" : "success",
-      message: checks.some((check) => check.status === "review") ? "A few sections need a human look." : "Every section passed the review scan.",
+      tone: flagged.length ? "info" : "success",
+      message: flagged.length
+        ? `${flagged.length} section(s) failed the ${config.outputGuide?.title || "Output Guide"} guard: ${flagged.slice(0, 2).map((check) => `${check.label || `Section ${check.section}`} — ${check.note}`).join(" · ")}`
+        : `Every section passed the ${config.outputGuide?.title || "Output Guide"} guard.`,
     });
-  }, [checking, job, persist]);
+  }, [checking, config.outputGuide, job, persist]);
 
   const downloadText = useCallback(() => {
     const result = job?.result || job?.stages.edit || "";
@@ -796,18 +984,10 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 <Icon name="edit" size={17} />
               </div>
               <select
-                value={config.templateId || templates[0]?.id || ""}
+                value={activeTemplateId}
                 onChange={(e) => {
                   const selected = templates.find((t) => t.id === e.target.value);
-                  if (selected) {
-                    updateConfig("templateId", selected.id);
-                    updateConfig("name", selected.name);
-                    updateConfig("formatRules", selected.formatRules);
-                    updateConfig("editRules", selected.editRules);
-                    updateConfig("masterPrompt", selected.masterPrompt);
-                    updateConfig("outputGuide", normalizeOutputGuide(selected.outputGuide));
-                    setNotice({ tone: "success", message: `Template "${selected.name}" applied.` });
-                  }
+                  if (selected) applyTemplate(selected);
                 }}
                 style={{
                   width: "100%",
@@ -828,11 +1008,20 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                   </option>
                 ))}
               </select>
+
+              {activeGuard && <TemplateGuardNote audit={activeGuard} drift={activeDrift} guarded={activeGuardSummary.guardedChecks} total={activeGuardSummary.totalChecks} />}
+
+              {guideAlert.length > 0 && (
+                <p style={{ margin: "6px 0 0", fontSize: "10.5px", color: "#8a5300", background: "#fff8e1", border: "1px solid #f0dca0", borderRadius: "6px", padding: "6px 8px" }}>
+                  <strong>Output guard:</strong> {guideAlert.join(" · ")}. Review the flagged pass before publishing.
+                </p>
+              )}
+
               <p>{config.description || config.outputGuide?.description || "Saved rules and output guide shape each pass."}</p>
               <button type="button" className="card-link" onClick={() => setRulesOpen((open) => !open)}>
                 {rulesOpen ? "Hide rules & guide" : "Adjust rules & guide"} <Icon name="chevron" size={14} />
               </button>
-              {rulesOpen && <GuidingRules config={config} onChange={updateConfig} />}
+              {rulesOpen && <GuidingRules config={config} onChange={updateConfig} template={activeTemplate} />}
               <Link href="/settings" className="card-link">Manage templates &amp; Output Guide <Icon name="arrow" size={14} /></Link>
             </div>
 
@@ -845,7 +1034,7 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 <Icon name="spark" size={17} />
               </div>
               <p style={{ fontSize: "12px", color: "var(--muted)", margin: "4px 0 8px" }}>
-                Type your custom model or choose from cascade presets (NVIDIA Nemotron, OpenRouter Gemma, Google Gemini).
+                Type your custom model or choose from cascade presets (NVIDIA Nemotron, OpenRouter Gemma, DeepSeek, Google Gemini).
               </p>
 
               <datalist id="workspace-models">
@@ -905,6 +1094,20 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 </button>
                 <button
                   type="button"
+                  onClick={() => updateConfig("primaryModel", "deepseek-flash")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "deepseek-flash" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "deepseek-flash" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  DeepSeek Flash
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateConfig("primaryModel", "deepseek-v4-pro")}
+                  style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "deepseek-v4-pro" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "deepseek-v4-pro" ? "#fff" : "var(--ink)", cursor: "pointer" }}
+                >
+                  DeepSeek V4 Pro
+                </button>
+                <button
+                  type="button"
                   onClick={() => updateConfig("primaryModel", "gemini-2.0-flash")}
                   style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", border: "1px solid var(--line)", background: config.primaryModel === "gemini-2.0-flash" ? "var(--accent)" : "var(--surface)", color: config.primaryModel === "gemini-2.0-flash" ? "#fff" : "var(--ink)", cursor: "pointer" }}
                 >
@@ -941,6 +1144,15 @@ export default function WorkspaceClient({ account, jobId }: { account: Account; 
                 ) : (
                   <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#f1f3f4", color: "#5f6368", borderRadius: "4px" }}>
                     ○ Google Key Not Set
+                  </span>
+                )}
+                {providersStatus?.deepseek?.available ? (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#e6f4ea", color: "#137333", borderRadius: "4px" }}>
+                    ● DeepSeek Ready
+                  </span>
+                ) : (
+                  <span className="badge" style={{ fontSize: "10px", padding: "2px 6px", background: "#f1f3f4", color: "#5f6368", borderRadius: "4px" }}>
+                    ○ DeepSeek Key Not Set
                   </span>
                 )}
               </div>
